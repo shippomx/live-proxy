@@ -3,11 +3,15 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha1"
 	"encoding/binary"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -141,6 +145,80 @@ func TestSplicerRejectsGarbage(t *testing.T) {
 	}
 }
 
+// 带内容标记的帧：同一时间戳、不同 mark 表示字节不同（如另一路转码）。
+func keyM(ts int64, mark byte) []byte   { return flvTag(tagVideo, ts, 0x17, 0x01, 0, 0, 0, mark) }
+func interM(ts int64, mark byte) []byte { return flvTag(tagVideo, ts, 0x27, 0x01, 0, 0, 0, mark) }
+func audioM(ts int64, mark byte) []byte { return flvTag(tagAudio, ts, 0xAF, 0x01, mark) }
+
+// TestSplicerExactResume CDN 新连接先突发推送 GOP 缓存（与上一段末尾重叠几秒）。
+// 续接必须从上一段最后一帧的下一帧开始：不重播、不丢帧、不重发 sequence header、时间戳不动。
+func TestSplicerExactResume(t *testing.T) {
+	var buf bytes.Buffer
+	sp := &flvSplicer{w: &buf}
+	sp.consume(bytes.NewReader(segment(vSeq(0), aSeq(0),
+		keyM(1000, 1), audioM(1010, 2), interM(1040, 3), interM(1073, 4), audioM(1080, 5))))
+	before := buf.Len()
+
+	sp.consume(bytes.NewReader(segment(script(0), vSeq(0), aSeq(0),
+		keyM(1000, 1), audioM(1010, 2), interM(1040, 3), interM(1073, 4), audioM(1080, 5), // GOP 缓存（重叠）
+		interM(1106, 6), audioM(1110, 7)))) // 真正的新内容
+
+	got := parseFLV(t, append(flvHeader(), buf.Bytes()[before:]...))
+	want := []parsedTag{{tagVideo, 1106, 0x27, 0x01}, {tagAudio, 1110, 0xAF, 0x01}}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("续接后应只有新内容\n got: %v\nwant: %v", got, want)
+	}
+	if sp.resumeSummary() != "视频=精确对齐 音频=精确对齐" || sp.dropped != 5 {
+		t.Fatalf("应精确对齐并丢弃 5 帧重叠，实际 %s dropped=%d", sp.resumeSummary(), sp.dropped)
+	}
+}
+
+// TestSplicerExactResumeInterleaveSkew 两条连接里音视频交错顺序不同（实测虎牙 GOP 缓存里音频会领先视频）。
+// 上一段最后写出的是音频时，不能因为对齐到这帧音频就把排在它后面、时间更早的视频再发一遍。
+func TestSplicerExactResumeInterleaveSkew(t *testing.T) {
+	var buf bytes.Buffer
+	sp := &flvSplicer{w: &buf}
+	sp.consume(bytes.NewReader(segment(
+		keyM(1000, 1), audioM(1000, 11), interM(1040, 2), audioM(1023, 12), interM(1080, 3), audioM(1046, 13))))
+	before := buf.Len()
+
+	// 新连接：音频整体排在前面，视频后补。
+	sp.consume(bytes.NewReader(segment(vSeq(0), aSeq(0),
+		audioM(1000, 11), audioM(1023, 12), audioM(1046, 13), audioM(1069, 14),
+		keyM(1000, 1), interM(1040, 2), interM(1080, 3), interM(1120, 4),
+		audioM(1092, 15))))
+
+	got := parseFLV(t, append(flvHeader(), buf.Bytes()[before:]...))
+	want := []parsedTag{{tagAudio, 1069, 0xAF, 0x01}, {tagVideo, 1120, 0x27, 0x01}, {tagAudio, 1092, 0xAF, 0x01}}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("音视频应各自从自己的末尾接上\n got: %v\nwant: %v", got, want)
+	}
+}
+
+// TestSplicerOverlapWithoutExactMatch 重叠部分字节对不上（换了 CDN/转码）时，
+// 仍不能重播：丢掉不晚于上一段末尾的帧，从之后的第一个关键帧接上。
+func TestSplicerOverlapWithoutExactMatch(t *testing.T) {
+	var buf bytes.Buffer
+	sp := &flvSplicer{w: &buf}
+	sp.consume(bytes.NewReader(segment(keyM(1000, 1), interM(2000, 2))))
+	before := buf.Len()
+
+	sp.consume(bytes.NewReader(segment(vSeq(0),
+		keyM(1000, 9), interM(1500, 9), interM(2000, 9), // 重叠，但字节不同
+		interM(2033, 9), // 晚于末尾，但不是关键帧，没法单独解码
+		keyM(2100, 9), interM(2133, 9))))
+
+	got := parseFLV(t, append(flvHeader(), buf.Bytes()[before:]...))
+	// 同一时钟下时间戳不动：2000→2100 的空白如实保留（不到一个 GOP），而不是把内容往前挪。
+	want := []parsedTag{{tagVideo, 2100, 0x17, 0x00}, {tagVideo, 2100, 0x17, 0x01}, {tagVideo, 2133, 0x27, 0x01}}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("应跳过重叠、从 2100 的关键帧接上\n got: %v\nwant: %v", got, want)
+	}
+	if sp.resumeSummary() != "视频=关键帧续接 音频=-" {
+		t.Fatalf("续接方式 %s", sp.resumeSummary())
+	}
+}
+
 // ---- 端到端：本地假 CDN + 假平台 ----
 
 type fakeSite struct {
@@ -216,6 +294,65 @@ func TestRelayAcrossUpstreamDisconnects(t *testing.T) {
 	}
 }
 
+// TestRelayNoReplayAcrossReconnects 端到端模拟真实 CDN：每次重连先推 3 秒 GOP 缓存。
+// 播放器收到的内容（按 mark 识别）必须每帧只出现一次且按顺序递增。
+func TestRelayNoReplayAcrossReconnects(t *testing.T) {
+	// 一路"直播"：每 100ms 一帧，mark 即帧序号，每 10 帧一个关键帧。
+	frame := func(i int) []byte {
+		if i%10 == 0 {
+			return keyM(int64(50000+i*100), byte(i))
+		}
+		return interM(int64(50000+i*100), byte(i))
+	}
+	// 第 n 段：从 (n*40-30) 往前最近的关键帧开始（GOP 缓存），推到 n*40+39。
+	seg := func(n int) []byte {
+		from := max(n*40-30, 0) / 10 * 10
+		var tags [][]byte
+		tags = append(tags, script(0), vSeq(0))
+		for i := from; i < n*40+40; i++ {
+			tags = append(tags, frame(i))
+		}
+		return segment(tags...)
+	}
+	var n atomic.Int32
+	cdn := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if k := n.Add(1) - 1; k < 4 {
+			w.Write(seg(int(k)))
+			return
+		}
+		http.Error(w, "gone", http.StatusForbidden)
+	}))
+	defer cdn.Close()
+	srv := serveRelay(t, &fakeSite{cdnURL: cdn.URL})
+
+	resp, err := http.Get(srv.URL + "/fake/1?relay=1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+
+	parseFLV(t, body) // 先做结构校验
+	// parsedTag 只保留了 data 前两个字节，mark 在第 6 字节，这里直接从原始字节里取。
+	var marks []int
+	b := body[13:]
+	for len(b) > 0 {
+		size := int(b[1])<<16 | int(b[2])<<8 | int(b[3])
+		if b[0] == tagVideo && b[12] == 0x01 {
+			marks = append(marks, int(b[11+5]))
+		}
+		b = b[11+size+4:]
+	}
+	if len(marks) != 160 {
+		t.Fatalf("4 段共 160 帧，应各出现一次，实际 %d 帧: %v", len(marks), marks)
+	}
+	for i, m := range marks {
+		if m != i {
+			t.Fatalf("第 %d 帧内容是 #%d —— 出现了重播或丢帧: %v", i, m, marks)
+		}
+	}
+}
+
 // TestRelayFirstPullFails 第一段就拉不到时必须返回 502，而不是 200 加空 body ——
 // 后者播放器会当成"流正常但没内容"一直转圈。
 func TestRelayFirstPullFails(t *testing.T) {
@@ -266,8 +403,9 @@ func TestRelayIdleUpstream(t *testing.T) {
 	body, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
 	tags := parseFLV(t, body)
-	if len(tags) != 4 || tags[2].ts != 80 {
-		t.Fatalf("假死后应续上第二段且关键帧落在 40+40=80，实际 %v", tags)
+	// 第二段 777 与第一段末尾 40 同一时钟、空白不到 3 秒：时间戳保持原值。
+	if len(tags) != 4 || tags[2].ts != 777 {
+		t.Fatalf("假死后应续上第二段且时间戳保持 777，实际 %v", tags)
 	}
 	if time.Since(start) > 5*time.Second {
 		t.Fatalf("看门狗未及时触发，耗时 %s", time.Since(start))
@@ -285,5 +423,124 @@ func TestRedirectStillDefault(t *testing.T) {
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusFound {
 		t.Fatalf("默认应 302，实际 %d", resp.StatusCode)
+	}
+}
+
+// ---- 联网：真实 CDN 上的续接去重 ----
+
+// liveDouyuRoom 从推荐列表动态取一个在播房间。不写死房间号：主播下播那天测试就会永久失败。
+func liveDouyuRoom(ctx context.Context) (string, error) {
+	body, err := sites.Get(ctx, "https://www.douyu.com/japi/weblist/apinc/allpage/6/1", map[string]string{
+		"Referer": "https://www.douyu.com/",
+	})
+	if err != nil {
+		return "", err
+	}
+	var r struct {
+		Data struct {
+			Rl []struct {
+				Type int         `json:"type"`
+				Rid  json.Number `json:"rid"`
+			} `json:"rl"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(body, &r); err != nil {
+		return "", err
+	}
+	for _, x := range r.Data.Rl {
+		if x.Type == 1 {
+			return x.Rid.String(), nil
+		}
+	}
+	return "", errors.New("推荐列表里没有在播房间")
+}
+
+// TestLiveResumeNoReplay 对真实房间拉 8 秒、主动断开、重新取流再拉 5 秒，
+// 断言续接走的是精确对齐，且输出里没有任何一帧视频内容出现两次。
+// 不等 CDN 自己断（斗鱼 5 分钟、B站/虎牙不固定），主动断开触发的是同一条续接路径。
+func TestLiveResumeNoReplay(t *testing.T) {
+	if testing.Short() {
+		t.Skip("联网测试")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	douyuRoom, err := liveDouyuRoom(ctx)
+	if err != nil {
+		t.Logf("取斗鱼在播房间失败，跳过斗鱼: %v", err)
+	}
+	cases := []struct {
+		site sites.Site
+		room string
+	}{{&sites.Bilibili{}, "6"}, {&sites.Huya{}, "18525140"}, {&sites.Douyu{}, douyuRoom}}
+
+	for _, c := range cases {
+		t.Run(c.site.ID(), func(t *testing.T) {
+			if c.room == "" {
+				t.Skip("无在播房间")
+			}
+			var buf bytes.Buffer
+			sp := &flvSplicer{w: &buf}
+			// 第一段拉 8 秒；第二段拉 5 秒，CDN 起播慢（5 秒内连文件头都没给）时重试，
+			// 否则测到的是 CDN 起播速度而不是续接逻辑。
+			for i := 0; i < 4 && sp.segment < 1; i++ {
+				dur := 5 * time.Second
+				if i == 0 {
+					dur = 8 * time.Second
+				}
+				rctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+				streams, err := c.site.GetStreams(rctx, c.room)
+				cancel()
+				if errors.Is(err, sites.ErrOffline) {
+					t.Skipf("房间 %s 未开播", c.room)
+				}
+				if err != nil {
+					t.Fatalf("第 %d 次取流失败: %v", i+1, err)
+				}
+				pctx, cancel := context.WithTimeout(context.Background(), dur)
+				err = pullOnce(pctx, streams[0].URL, sp, func() {})
+				cancel()
+				if err != nil && pctx.Err() == nil {
+					t.Logf("第 %d 次拉流在主动断开前失败（CDN %s）: %v", i+1, streams[0].CDN, err)
+				}
+				if i > 0 && sp.segment < 1 {
+					t.Logf("第 %d 次重连 %s 内未收到 FLV 文件头，重试", i, dur)
+				}
+			}
+
+			seen := map[[20]byte]int64{}
+			dups, frames := 0, 0
+			b := buf.Bytes()[13:]
+			for len(b) >= 15 {
+				size := int(b[1])<<16 | int(b[2])<<8 | int(b[3])
+				if len(b) < 11+size+4 {
+					break // 主动断开时最后一个 tag 可能不完整，不算
+				}
+				data := b[11 : 11+size]
+				if b[0] == tagVideo && !isSequenceHeader(tagVideo, data) && size > 512 {
+					frames++
+					h := sha1.Sum(data)
+					if first, ok := seen[h]; ok {
+						dups++
+						if dups <= 3 {
+							t.Errorf("内容重复: ts=%d 的帧与 ts=%d 相同（%d 字节）", tagTS(b), first, size)
+						}
+					} else {
+						seen[h] = tagTS(b)
+					}
+				}
+				b = b[11+size+4:]
+			}
+			t.Logf("视频帧 %d，重复 %d；续接方式 %s，丢弃重叠 %d 帧", frames, dups, sp.resumeSummary(), sp.dropped)
+			if sp.segment != 1 {
+				t.Fatalf("重连 3 次都没拿到第二段，无法验证续接（segment=%d）", sp.segment)
+			}
+			if dups > 0 {
+				t.Fatalf("续接后有 %d 帧内容重播", dups)
+			}
+			// 精确对齐是期望路径，但偶有个别帧字节不同（实测虎牙 1/1533）会走兜底，兜底同样不重播。
+			if !strings.Contains(sp.resumeSummary(), "视频=精确对齐") {
+				t.Logf("注意：视频未精确对齐，走了兜底: %s", sp.resumeSummary())
+			}
+		})
 	}
 }

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
 	"errors"
@@ -93,7 +94,8 @@ func relay(ctx context.Context, w http.ResponseWriter, log *slog.Logger, site si
 		} else {
 			barren = 0
 		}
-		log.Info("上游断开，重新取流", "segment", seg, "cdn", target.CDN, "dur", time.Since(start).Round(time.Second), "err", err)
+		log.Info("上游断开，重新取流", "segment", seg, "cdn", target.CDN, "dur", time.Since(start).Round(time.Second), "err", err,
+			"resume", sp.resumeSummary(), "dropped", sp.dropped)
 
 		target, err = reresolve(ctx, site, roomID, target.CDN)
 		if err != nil {
@@ -208,22 +210,62 @@ func (d *deadlineWriter) Write(p []byte) (int, error) {
 // 第一段原样透传。之后每一段：
 //   - 丢掉 FLV 文件头：同一条响应里出现第二个文件头，播放器会当成数据错乱。
 //   - 丢掉 script tag（onMetaData）：内容只是元信息，重复出现没有收益。
-//   - 暂存音视频 sequence header，等到关键帧再一起写出：编解码参数要在帧之前到达，
-//     而它们自带的时间戳（通常是 0）还没法换算。
-//   - 丢掉第一个视频关键帧之前的所有音视频：从非关键帧开始解码会花屏。
-//   - 时间戳整体平移，让新段第一个关键帧紧接上一段最后一帧。CDN 给的时间戳
-//     各段互不相干，不平移的话播放器会看到时间倒退或跳几小时，直接卡死。
+//   - 去掉与上一段重叠的内容。CDN 对新连接会先突发推送一段 GOP 缓存，从几秒前的
+//     关键帧开始（实测虎牙 7s、B站 5s、斗鱼 3s）。不去掉的话每次续接都会把最后几秒
+//     重播一遍。去重方式见 resume。
+//   - 必要时时间戳整体平移，让新段紧接上一段最后一帧。CDN 给的时间戳各段可能
+//     互不相干，不平移的话播放器会看到时间倒退或跳几小时，直接卡死。
 type flvSplicer struct {
 	w          io.Writer
 	headerSent bool
 	written    int64
 
 	segment int
-	lastTS  int64 // 已写出音视频 tag 的最大时间戳
-	offset  int64 // 当前段的时间戳平移量
-	rebased bool  // 当前段是否已对齐到关键帧
-	pending [][]byte
+	lastTS  int64 // 已写出音视频 tag 的最大时间戳（输出时间轴）
+	offset  int64 // 时间戳平移量：输出 = 原始 + offset
+
+	// 上一次写出的音频帧、视频帧（不含 sequence header），时间戳是上游原始值。
+	// 音视频必须分开记：两条连接里音视频的交错顺序不一样（实测虎牙 GOP 缓存里音频
+	// 领先视频），只按"最后一个 tag"对齐，会把排在它后面但时间更早的另一路再发一遍。
+	last [2]lastFrame
+
+	// 当前段的续接状态。
+	mode    resumeMode
+	resumed [2]bool   // 音频/视频是否已找到续接点
+	pending [2][]byte // 续接点之前收到的 sequence header，按需补发
+	how     [2]string // 音频/视频各自的续接方式，供日志核对
+	dropped int       // 因重叠或等关键帧丢弃的帧数
 }
+
+type lastFrame struct {
+	ok   bool
+	ts   int64
+	data []byte
+}
+
+type resumeMode int
+
+const (
+	modeUndecided resumeMode = iota
+	modeDedupe               // 同一时钟：去掉重叠，时间戳不动
+	modeRebase               // 时钟不同或空白太长：在关键帧处重新对时
+)
+
+func avIndex(typ byte) int {
+	if typ == tagVideo {
+		return 1
+	}
+	return 0
+}
+
+// 新段时间戳与上一段末尾相差在此范围内，就认为两段用的是同一套时钟，
+// 可以按时间戳判断哪些帧是重叠的。超出则是 CDN 换了时钟（如从 0 重新计），
+// 这时按时间戳去重会把整段都当成"旧内容"丢光。
+const sameClockWindowMs = 60_000
+
+// 新段第一帧比上一段末尾晚超过这么多（重连太慢，GOP 缓存也没盖住），就不保留这段
+// 时间空白而是重新对时：时间轴上突然空出几秒，播放器可能停下来等。
+const maxNaturalGapMs = 3_000
 
 const (
 	tagAudio  = 8
@@ -258,8 +300,7 @@ func (s *flvSplicer) consume(r io.Reader) error {
 		s.headerSent = true
 	} else {
 		s.segment++
-		s.rebased = false
-		s.pending = nil
+		s.mode, s.resumed, s.pending, s.how, s.dropped = modeUndecided, [2]bool{}, [2][]byte{}, [2]string{}, 0
 	}
 
 	var th [11]byte
@@ -286,41 +327,121 @@ func (s *flvSplicer) consume(r io.Reader) error {
 func (s *flvSplicer) handleTag(typ byte, tag []byte) error {
 	data := tag[11 : len(tag)-4]
 
-	if s.segment == 0 {
-		if typ != tagScript {
-			s.trackTS(tagTS(tag))
+	if s.segment > 0 && typ == tagScript {
+		return nil
+	}
+	if s.segment > 0 && typ != tagScript && !s.resumed[avIndex(typ)] {
+		start, err := s.resume(typ, tag, data)
+		if !start || err != nil {
+			return err
 		}
+	}
+	return s.emit(typ, tag, data)
+}
+
+// emit 按当前平移量写出一个 tag，并记下最后写出的音视频帧。
+func (s *flvSplicer) emit(typ byte, tag, data []byte) error {
+	if typ == tagScript {
 		return s.write(tag)
 	}
+	orig := tagTS(tag)
+	// 音频和视频交错时，紧跟关键帧的音频时间戳可能略早于关键帧，平移后会落到负数。
+	ts := max(orig+s.offset, 0)
+	setTagTS(tag, ts)
+	s.trackTS(ts)
+	if !isSequenceHeader(typ, data) {
+		l := &s.last[avIndex(typ)]
+		l.ok, l.ts = true, orig
+		l.data = append(l.data[:0], data...)
+	}
+	return s.write(tag)
+}
 
-	switch {
-	case typ == tagScript:
-		return nil
-	case !s.rebased && isSequenceHeader(typ, data):
-		s.pending = append(s.pending, tag)
-		return nil
-	case !s.rebased && !(typ == tagVideo && isKeyframe(data)):
-		return nil
-	case !s.rebased:
-		s.offset = s.lastTS + spliceGapMs - tagTS(tag)
-		s.rebased = true
-		for _, p := range s.pending {
-			setTagTS(p, s.lastTS+spliceGapMs)
+// resume 为新段里某一路（音频或视频）寻找续接点，返回 true 表示当前 tag 就是这一路写出的第一帧。
+//
+// 新段第一帧决定模式：
+//   - 与上一段末尾同一时钟且没有大段空白（GOP 缓存重叠就属于这种）→ 去重模式，时间戳不动。
+//     音视频各自优先精确对齐：同一路 CDN 流在两条连接里的帧逐字节相同（实测三个平台 99.9%+），
+//     找到上一段最后写出的那一帧，从它的下一帧接上，不重复、不丢帧、不必等关键帧。
+//     找不到就丢掉不晚于末尾的帧：音频直接接上，视频等下一个关键帧（最多停顿不到一个 GOP，
+//     声音不断，音画仍同步）。
+//   - 否则 → 重新对时：等第一个视频关键帧，把它平移到上一段末尾之后，音视频一起接上。
+func (s *flvSplicer) resume(typ byte, tag, data []byte) (bool, error) {
+	i := avIndex(typ)
+	if isSequenceHeader(typ, data) {
+		s.pending[i] = tag
+		return false, nil
+	}
+	ts := tagTS(tag)
+
+	if s.mode == modeUndecided {
+		s.mode = modeRebase
+		ref := s.last[1]
+		if !ref.ok {
+			ref = s.last[0]
+		}
+		if d := ts - ref.ts; ref.ok && d >= -sameClockWindowMs && d <= maxNaturalGapMs {
+			s.mode = modeDedupe
+		}
+	}
+
+	if s.mode == modeRebase {
+		if typ != tagVideo || !isKeyframe(data) {
+			s.dropped++
+			return false, nil
+		}
+		s.offset = s.lastTS + spliceGapMs - ts
+		s.resumed = [2]bool{true, true}
+		s.how = [2]string{"重新对时", "重新对时"}
+		return true, s.flushPending(s.lastTS+spliceGapMs, 1, 0)
+	}
+
+	l := s.last[i]
+	if l.ok && ts == l.ts && bytes.Equal(data, l.data) {
+		s.resumed[i], s.pending[i], s.how[i] = true, nil, "精确对齐"
+		s.dropped++
+		return false, nil // 这一帧本身已经发过
+	}
+	if l.ok && ts <= l.ts {
+		s.dropped++
+		return false, nil
+	}
+	if typ == tagVideo && !isKeyframe(data) {
+		s.dropped++
+		return false, nil
+	}
+	s.resumed[i] = true
+	if typ == tagVideo {
+		s.how[i] = "关键帧续接"
+	} else {
+		s.how[i] = "按时间续接"
+	}
+	return true, s.flushPending(max(ts+s.offset, 0), i)
+}
+
+// flushPending 在续接点之前补发暂存的 sequence header，时间戳与紧随其后的那一帧相同。
+func (s *flvSplicer) flushPending(ts int64, idx ...int) error {
+	for _, i := range idx {
+		if p := s.pending[i]; p != nil {
+			s.pending[i] = nil
+			setTagTS(p, ts)
 			if err := s.write(p); err != nil {
 				return err
 			}
 		}
-		s.pending = nil
 	}
+	return nil
+}
 
-	// 音频和视频交错时，紧跟关键帧的音频时间戳可能略早于关键帧，平移后会落到负数。
-	ts := tagTS(tag) + s.offset
-	if ts < 0 {
-		ts = 0
+// resumeSummary 当前段音视频各自的续接方式，供日志核对去重是否生效。
+func (s *flvSplicer) resumeSummary() string {
+	f := func(v string) string {
+		if v == "" {
+			return "-"
+		}
+		return v
 	}
-	setTagTS(tag, ts)
-	s.trackTS(ts)
-	return s.write(tag)
+	return "视频=" + f(s.how[1]) + " 音频=" + f(s.how[0])
 }
 
 func (s *flvSplicer) trackTS(ts int64) {
