@@ -15,10 +15,11 @@ import (
 )
 
 func TestEPGEndToEnd(t *testing.T) {
-	day := time.Now().Format("20060102")
+	// 节目时间取"一小时后"并带时区：不依赖跑测试的机器在哪个时区。
+	start := time.Now().Add(time.Hour).Format("20060102150405 -0700")
 	src := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, `<tv><channel id="c1"><display-name>CCTV1</display-name></channel>
-<programme start="%s120000 +0800" channel="c1"><title>新闻</title></programme></tv>`, day)
+<programme start="%s" channel="c1"><title>新闻</title></programme></tv>`, start)
 	}))
 	defer src.Close()
 	srv := newBrowseServer(t)

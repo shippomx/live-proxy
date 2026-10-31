@@ -103,3 +103,28 @@ func TestMergeBadSourceDoesNotBreakOthers(t *testing.T) {
 		t.Fatalf("坏来源应只记错误、不影响其他来源: %+v matched=%v", res.Sources, res.Matched)
 	}
 }
+
+// now 是北京时间 10-31 12:00 = UTC 10-31 04:00，回看窗口起点是 UTC 10-30 04:00。
+// 来源用 UTC 时，按字符串比较会把 UTC 当北京时间：UTC 08:00 的节目（北京时间 16:00，在窗口内）
+// 会和 "20261030120000" 比较而被误丢——这正是修复前线上的表现。
+func TestMergeRespectsTimezone(t *testing.T) {
+	src := `<tv><channel id="c"><display-name>CCTV1</display-name></channel>
+<programme start="20261030033000 +0000" channel="c"><title>超出回看窗口</title></programme>
+<programme start="20261030080000 +0000" channel="c"><title>窗口内</title></programme>
+<programme start="20261103030000 +0000" channel="c"><title>刚好在 72 小时内</title></programme>
+<programme start="20261103050000 +0000" channel="c"><title>超出 72 小时</title></programme>
+</tv>`
+	res := Merge([]Target{{ID: "CCTV-1", Names: []string{"CCTV-1"}}}, []Source{{Name: "utc", Data: strings.NewReader(src)}},
+		now, 24*time.Hour, 72*time.Hour)
+	out := string(res.XML)
+	for _, want := range []string{"窗口内", "刚好在 72 小时内"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("缺少 %q", want)
+		}
+	}
+	for _, bad := range []string{"超出回看窗口", "超出 72 小时"} {
+		if strings.Contains(out, bad) {
+			t.Errorf("不应包含 %q", bad)
+		}
+	}
+}

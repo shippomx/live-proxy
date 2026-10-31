@@ -89,8 +89,7 @@ func Merge(targets []Target, sources []Source, now time.Time, before, after time
 		}
 	}
 	owner := make([]int, len(targets)) // 提供节目的来源下标 +1；0 表示还没有
-	from := now.Add(-before).Format("20060102150405")
-	to := now.Add(after).Format("20060102150405")
+	from, to := now.Add(-before), now.Add(after)
 
 	var res Result
 	var progBuf bytes.Buffer
@@ -125,7 +124,10 @@ func Merge(targets []Target, sources []Source, now time.Time, before, after time
 					return err
 				}
 				tis := mapping[p.Channel]
-				if len(tis) == 0 || len(p.Start) < 14 || p.Start[:14] < from || p.Start[:14] > to {
+				if len(tis) == 0 {
+					return nil
+				}
+				if st, ok := ParseTime(p.Start, now.Location()); !ok || st.Before(from) || st.After(to) {
 					return nil
 				}
 				for _, ti := range tis {
@@ -165,6 +167,23 @@ func Merge(targets []Target, sources []Source, now time.Time, before, after time
 	out.WriteString("</tv>\n")
 	res.XML = out.Bytes()
 	return res
+}
+
+// ParseTime 解析 XMLTV 时间 "20261031120000 +0800"。必须带上时区比较：
+// 不同来源时区不同（epg.pw 是 +0000，51zmt 是 +0800），按字符串比会整体偏 8 小时。
+// 没写时区的按 loc 处理。
+func ParseTime(s string, loc *time.Location) (time.Time, bool) {
+	s = strings.TrimSpace(s)
+	if len(s) < 14 {
+		return time.Time{}, false
+	}
+	if rest := strings.TrimSpace(s[14:]); rest != "" {
+		if t, err := time.Parse("20060102150405 -0700", s[:14]+" "+rest); err == nil {
+			return t, true
+		}
+	}
+	t, err := time.ParseInLocation("20060102150405", s[:14], loc)
+	return t, err == nil
 }
 
 // decode 遍历 <tv> 下的直接子元素。gzip 压缩的源按魔数自动解压。
