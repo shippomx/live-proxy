@@ -190,6 +190,26 @@
   .preview img { width: 40px; height: 40px; border-radius: 50%; object-fit: cover; background: var(--surface-2); }
 
   img.broken { visibility: hidden; }
+  .ch-jump { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: var(--s3); }
+  .ch-jump a { font-size: 12px; padding: 2px 10px; border-radius: 999px; background: var(--surface-2); color: var(--muted); text-decoration: none; }
+  .ch-jump a:hover { background: var(--primary-soft); color: var(--primary); }
+  .ch-sec { margin-bottom: var(--s5); scroll-margin-top: calc(var(--topbar-h) + var(--s3)); }
+  .ch-sec h3 { display: flex; align-items: center; gap: var(--s2); font-size: 14px; margin: 0 0 var(--s2); }
+  .ch-sec h3 .badge { font-weight: 400; }
+  .ch-grid { display: grid; gap: var(--s2); grid-template-columns: repeat(auto-fill, minmax(196px, 1fr)); }
+  .ch-card { display: flex; align-items: center; gap: var(--s3); width: 100%; min-height: 60px; padding: var(--s2) var(--s3);
+             text-align: left; font: inherit; color: var(--text); background: var(--surface); border: 1px solid var(--border);
+             border-radius: 10px; cursor: pointer; transition: border-color .15s, background .15s; }
+  .ch-card:hover { border-color: var(--primary); background: var(--primary-soft); }
+  .ch-card .logo { position: relative; width: 44px; height: 44px; flex: none; border-radius: 8px; background: var(--surface-2);
+                   display: flex; align-items: center; justify-content: center; overflow: hidden; color: var(--muted); font-weight: 600; }
+  .ch-card .logo img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; }
+  .ch-card .txt { flex: 1; min-width: 0; }
+  .ch-card .n { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .ch-card .m { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .ch-card .pi { color: var(--muted); opacity: 0; transition: opacity .15s; }
+  .ch-card:hover .pi, .ch-card:focus-visible .pi { opacity: 1; color: var(--primary); }
+  @media (pointer: coarse) { .ch-card .pi { opacity: .6; } }
   .seg-tabs { display: inline-flex; gap: 2px; padding: 3px; background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius); }
   .seg-tabs button { border: 0; background: transparent; color: var(--muted); font: inherit; font-size: 13px; padding: 0 var(--s3); height: 28px; border-radius: 6px; cursor: pointer; }
   .seg-tabs button[aria-pressed="true"] { background: var(--surface); color: var(--text); font-weight: 600; box-shadow: var(--shadow); }
@@ -578,7 +598,7 @@ function viewSearch(v, r) {
 
 async function viewChannels(v) {
   setCrumbs(["频道管理", "频道列表"]);
-  v.append(head("频道列表", "收藏与导入的全部频道，按加入顺序输出到播放列表。",
+  v.append(head("频道列表", "收藏与导入的全部频道，按分组平铺，点卡片即可观看；表格视图用于批量管理。",
     el("a", { class: "btn", href: "#/import" }, icon("plus", "width:16px;height:16px"), "导入与添加")));
   const box = el("div", { class: "state" }, "加载中…");
   v.append(box);
@@ -603,16 +623,63 @@ async function viewChannels(v) {
   const selected = new Set();
   const PAGE = 50;
   let page = 0, rows = [];
+  // 卡片（按分组平铺，点击播放）与表格（批量管理）两种视图，记住上次的选择。
+  let mode = "grid";
+  try { mode = localStorage.getItem("channelView") || "grid"; } catch (_) {}
+  const gridBox = el("div", { class: "panel-body" });
+  const tableBox = el("div");
+  const modeTabs = el("div", { class: "seg-tabs", role: "group", "aria-label": "视图" },
+    ...[["grid", "卡片"], ["table", "表格"]].map(([m, label]) => el("button", { "data-m": m, onclick: () => setMode(m) }, label)));
+  function setMode(m) {
+    mode = m;
+    try { localStorage.setItem("channelView", m); } catch (_) {}
+    for (const b of modeTabs.children) b.setAttribute("aria-pressed", String(b.dataset.m === m));
+    gridBox.hidden = m !== "grid";
+    tableBox.hidden = m !== "table";
+    m === "grid" ? drawGrid() : draw();
+  }
 
   const filter = () => {
     const kw = q.value.trim().toLowerCase();
     rows = chs.filter(c => (!gsel.value || (c.group || "未分组") === gsel.value) && (!ssel.value || c.source === ssel.value) &&
       (!kw || c.name.toLowerCase().includes(kw) || addr(c).toLowerCase().includes(kw)));
     page = 0;
-    draw();
+    mode === "grid" ? drawGrid() : draw();
   };
   const addr = c => c.platform ? `${c.platform}/${c.room_id}` + (c.query ? "?" + c.query : "") : c.url;
   const playURL = c => c.platform ? streamURL(c.platform, c.room_id) + (c.query ? "?" + c.query : "") : c.url;
+
+  // 来源的简短说明：直播间显示平台+房间号，组播显示组播地址，其他显示主机名。
+  const where = c => {
+    if (c.platform) return `${siteName(c.platform).replace(/直播$/, "")} · ${c.room_id}`;
+    const m = /\/(rtp|udp)\/([\d.]+:\d+)/.exec(c.url);
+    if (m) return "组播 " + m[2];
+    try { return new URL(c.url).host; } catch (_) { return c.url; }
+  };
+  function drawGrid() {
+    if (!rows.length) {
+      gridBox.replaceChildren(el("div", { class: "state" }, chs.length ? "没有符合条件的频道" : "还没有频道：去推荐、分区、搜索里收藏，或者导入 m3u"));
+      return;
+    }
+    const groups = new Map();
+    for (const c of rows) {
+      const g = c.group || "未分组";
+      if (!groups.has(g)) groups.set(g, []);
+      groups.get(g).push(c);
+    }
+    const ids = new Map([...groups.keys()].map((g, i) => [g, "grp-" + i]));
+    gridBox.replaceChildren(
+      groups.size > 1 ? el("nav", { class: "ch-jump", "aria-label": "跳到分组" },
+        ...[...groups].map(([g, list]) => el("a", { href: "#", onclick: e => { e.preventDefault(); document.getElementById(ids.get(g)).scrollIntoView({ behavior: "smooth" }); } }, `${g} ${list.length}`))) : null,
+      ...[...groups].map(([g, list]) => el("section", { class: "ch-sec", id: ids.get(g) },
+        el("h3", {}, g, el("span", { class: "badge" }, String(list.length))),
+        el("div", { class: "ch-grid" }, ...list.map(c =>
+          el("button", { class: "ch-card", title: `${c.name}\n${addr(c)}`, onclick: () => openPlayer({ channel: c }) },
+            el("span", { class: "logo", "aria-hidden": "true" }, (c.name || "?").trim().slice(0, 1),
+              c.logo ? el("img", { src: c.logo, loading: "lazy", alt: "", referrerpolicy: "no-referrer" }) : null),
+            el("span", { class: "txt" }, el("span", { class: "n", style: "display:block" }, c.name), el("span", { class: "m", style: "display:block" }, where(c))),
+            el("span", { class: "pi" }, icon("play", "width:18px;height:18px"))))))));
+  }
 
   function draw() {
     const slice = rows.slice(page * PAGE, page * PAGE + PAGE);
@@ -646,7 +713,7 @@ async function viewChannels(v) {
     syncBulk();
   }
   function syncBulk() {
-    bulk.hidden = selected.size === 0;
+    bulk.hidden = selected.size === 0 || mode !== "table";
     bulk.replaceChildren(el("span", {}, `已选 ${selected.size} 个`),
       el("button", { class: "btn sm danger", onclick: () => del(chs.filter(c => selected.has(c.id))) }, icon("trash", "width:14px;height:14px"), "删除所选"),
       el("button", { class: "btn sm", onclick: () => { selected.clear(); draw(); } }, "取消选择"));
@@ -674,14 +741,16 @@ async function viewChannels(v) {
   });
   q.addEventListener("input", filter); gsel.addEventListener("change", filter); ssel.addEventListener("change", filter);
 
-  box.replaceWith(stats, el("section", { class: "panel" },
-    el("div", { class: "panel-head" }, el("div", { class: "toolbar" }, q, gsel, ssel)),
-    bulk,
+  tableBox.append(bulk,
     el("div", { class: "table-wrap" }, el("table", {},
       el("thead", {}, el("tr", {}, el("th", { style: "width:36px" }, all), el("th", { style: "width:44px" }, "台标"), el("th", {}, "名称"),
         el("th", {}, "分组"), el("th", {}, "来源"), el("th", {}, "地址"), el("th", {}, "加入时间"), el("th", { style: "text-align:right" }, "操作"))),
       tbody)),
-    pagerBar));
+    pagerBar);
+  box.replaceWith(stats, el("section", { class: "panel" },
+    el("div", { class: "panel-head" }, el("div", { class: "toolbar" }, q, gsel, ssel), modeTabs),
+    gridBox, tableBox));
+  setMode(mode === "table" ? "table" : "grid");
   filter();
 }
 
