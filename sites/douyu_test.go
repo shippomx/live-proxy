@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
@@ -155,4 +156,21 @@ func TestDouyuLive(t *testing.T) {
 		return
 	}
 	t.Fatalf("非 FLV 响应: HTTP %s, 前 %d 字节 %q", resp.Status, n, buf[:n])
+}
+
+// TestDouyuUpgradeRates rate=0 是原画（码率最高），必须排在升档候选的第一位。
+// 早先把 0 当成"自动"跳过，导致登录后也拿不到原画。
+func TestDouyuUpgradeRates(t *testing.T) {
+	p := douyuPlayData{Rate: 2, Multirates: []douyuRate{
+		{Rate: 0, Name: "原画1080P60", Bit: 8312}, {Rate: 4, Name: "蓝光4M", Bit: 4000},
+		{Rate: 3, Name: "超清", Bit: 2000}, {Rate: 2, Name: "高清", Bit: 900},
+	}}
+	got := fmt.Sprint(p.upgradeRates())
+	if got != "[0 4 3]" {
+		t.Fatalf("升档顺序应为 [0 4 3]（原画优先、不含当前档），实际 %s", got)
+	}
+	p.Rate = 0
+	if r := p.upgradeRates(); len(r) != 0 {
+		t.Fatalf("已是原画时不应再升档，实际 %v", r)
+	}
 }

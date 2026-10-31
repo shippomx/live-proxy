@@ -48,6 +48,7 @@ var relayDefault bool
 func main() {
 	addr := flag.String("addr", ":9000", "监听地址")
 	flag.BoolVar(&relayDefault, "relay", false, "FLV 线路默认走中转（上游断开自动续接），而不是 302 跳转")
+	flag.StringVar(&loginDir, "data", "", "扫码登录 Cookie 的保存目录；为空则登录只在本次运行期间有效")
 	flag.Parse()
 
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
@@ -58,6 +59,7 @@ func main() {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]any{"ok": true, "platforms": platformIDs()})
 	})
+	registerLoginRoutes(mux)
 	mux.HandleFunc("/", handleStream)
 
 	srv := &http.Server{
@@ -67,6 +69,8 @@ func main() {
 		WriteTimeout:      40 * time.Second,
 		IdleTimeout:       120 * time.Second,
 	}
+
+	loadSavedCookies()
 
 	go func() {
 		slog.Info("启动", "addr", *addr, "platforms", platformIDs())

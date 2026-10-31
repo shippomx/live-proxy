@@ -8,12 +8,27 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 )
 
 type Bilibili struct {
 	// Cookie 可选。匿名可取流，但服务端会把清晰度裁到超清(250)；
 	// 要原画(10000)必须带登录 Cookie（SESSDATA + bili_jct + buvid3）。
+	// 运行中会被扫码登录替换，取流与登录在不同 goroutine，读写一律经过 SetCookie/cookie。
 	Cookie string
+	mu     sync.RWMutex
+}
+
+func (b *Bilibili) SetCookie(c string) {
+	b.mu.Lock()
+	b.Cookie = c
+	b.mu.Unlock()
+}
+
+func (b *Bilibili) cookie() string {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	return b.Cookie
 }
 
 func (b *Bilibili) ID() string   { return "bilibili" }
@@ -68,8 +83,8 @@ func (b *Bilibili) GetStreams(ctx context.Context, roomID string) ([]Stream, err
 
 	api := "https://api.live.bilibili.com/xlive/web-room/v2/index/getRoomPlayInfo?" + q.Encode()
 	header := map[string]string{"Referer": "https://live.bilibili.com/", "Accept": "application/json"}
-	if b.Cookie != "" {
-		header["Cookie"] = b.Cookie
+	if c := b.cookie(); c != "" {
+		header["Cookie"] = c
 	}
 
 	body, err := Get(ctx, api, header)

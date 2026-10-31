@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"html"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -16,6 +17,23 @@ import (
 type Douyu struct {
 	mu    sync.Mutex
 	cache map[string]douyuScript // key: 真实 room_id
+
+	// 登录 Cookie，可选。匿名请求原画会被静默降级成高清，要原画必须登录。
+	// 运行中会被扫码登录替换，读写经过 SetCookie/loginCookie。
+	ckMu   sync.RWMutex
+	cookie string
+}
+
+func (d *Douyu) SetCookie(c string) {
+	d.ckMu.Lock()
+	d.cookie = c
+	d.ckMu.Unlock()
+}
+
+func (d *Douyu) loginCookie() string {
+	d.ckMu.RLock()
+	defer d.ckMu.RUnlock()
+	return d.cookie
 }
 
 type douyuScript struct {
@@ -70,21 +88,29 @@ func (p douyuPlayData) qualityName() string {
 	return "rate" + strconv.Itoa(p.Rate)
 }
 
-// bestRate 返回码率最高的档位；若当前已经是最高档则返回 -1（无需再发一次请求）。
-func (p douyuPlayData) bestRate() int {
-	best, bestBit := -1, -1
+// upgradeRates 返回比当前档位码率更高的档位，按码率从高到低排序。
+//
+// rate=0 是"原画"（实测名称如"原画1080P60"，码率在列表里最高），不是"自动"——
+// 早先按"自动"跳过了它，于是登录后也永远拿不到原画。
+func (p douyuPlayData) upgradeRates() []int {
+	cur := -1
 	for _, r := range p.Multirates {
-		if r.Rate == 0 { // 0 是"自动"，不是真实档位
-			continue
-		}
-		if r.Bit > bestBit {
-			best, bestBit = r.Rate, r.Bit
+		if r.Rate == p.Rate {
+			cur = r.Bit
 		}
 	}
-	if best == p.Rate {
-		return -1
+	rs := make([]douyuRate, 0, len(p.Multirates))
+	for _, r := range p.Multirates {
+		if r.Bit > cur {
+			rs = append(rs, r)
+		}
 	}
-	return best
+	sort.Slice(rs, func(i, j int) bool { return rs[i].Bit > rs[j].Bit })
+	out := make([]int, len(rs))
+	for i, r := range rs {
+		out[i] = r.Rate
+	}
+	return out
 }
 
 type douyuPlayResp struct {
@@ -134,6 +160,9 @@ func (d *Douyu) GetStreams(ctx context.Context, roomID string) ([]Stream, error)
 	// 第二步：拿默认档 + 清晰度列表。rate=-1 表示"给我默认档"。
 	playAPI := "https://www.douyu.com/lapi/live/getH5Play/" + roomID
 	header := map[string]string{"Referer": referer}
+	if c := d.loginCookie(); c != "" {
+		header["Cookie"] = c
+	}
 	body, err = PostForm(ctx, playAPI, args+"&cdn=&rate=-1&ver=Douyu_223061205&iar=1&ive=1&hevc=0&fa=0", header)
 	if err != nil {
 		return nil, err
@@ -156,28 +185,36 @@ func (d *Douyu) GetStreams(ctx context.Context, roomID string) ([]Stream, error)
 		})
 	}
 
-	// 第三步：再取一次最高档。只补最高档，不遍历"档位×CDN"的全组合 ——
+	// 第三步：往高档升。只补一条最高可得的线路，不遍历"档位×CDN"的全组合 ——
 	// 盒子上实际只会播一条，把请求数放大 N 倍只会更容易触发风控。
-	if best := meta.Data.bestRate(); best >= 0 {
-		body, err = PostForm(ctx, playAPI, fmt.Sprintf("%s&cdn=&rate=%d", args, best), header)
-		if err == nil {
-			var hi douyuPlayResp
-			if json.Unmarshal(body, &hi) == nil && hi.Error == 0 {
-				if u := hi.Data.url(); u != "" {
-					// 最高档排在最前。
-					out = append([]Stream{{
-						CDN:     hi.Data.RtmpCdn,
-						Quality: hi.Data.qualityName(),
-						Format:  FormatFLV,
-						URL:     u,
-					}}, out...)
-				}
-			}
+	// 未登录时请求原画会被静默降级成高清（返回的 rate 与请求的不同），
+	// 所以按码率从高到低试，最多试两档：匿名时落到蓝光/超清，登录后拿到原画。
+	for i, want := range meta.Data.upgradeRates() {
+		if i >= 2 {
+			break
 		}
-		// 取最高档失败不致命：默认档已经在手，返回它比整个请求失败好。
-		// 这不是静默降级 —— 返回结果里的 Quality 字段如实写着实际档位，
-		// 调用方看得见自己拿到的不是最高清晰度。
+		body, err = PostForm(ctx, playAPI, fmt.Sprintf("%s&cdn=&rate=%d", args, want), header)
+		if err != nil {
+			break
+		}
+		var hi douyuPlayResp
+		if json.Unmarshal(body, &hi) != nil || hi.Error != 0 || hi.Data.Rate != want {
+			continue
+		}
+		if u := hi.Data.url(); u != "" {
+			// 最高档排在最前。
+			out = append([]Stream{{
+				CDN:     hi.Data.RtmpCdn,
+				Quality: hi.Data.qualityName(),
+				Format:  FormatFLV,
+				URL:     u,
+			}}, out...)
+			break
+		}
 	}
+	// 升档失败不致命：默认档已经在手，返回它比整个请求失败好。
+	// 这不是静默降级 —— 返回结果里的 Quality 字段如实写着实际档位，
+	// 调用方看得见自己拿到的不是最高清晰度。
 
 	if len(out) == 0 {
 		return nil, fmt.Errorf("%w: douyu: 签名通过但没有可用流地址", ErrParse)
