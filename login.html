@@ -47,6 +47,7 @@
   <div class="grid" id="list"><div class="card">加载中…</div></div>
   <ul class="note">
     <li>B站、斗鱼不登录时会被降级：B站最高超清，斗鱼请求原画会变成高清。</li>
+    <li>斗鱼可用斗鱼 App 或微信扫码；微信需已关联斗鱼账号，否则请先在斗鱼 App 里用微信登录一次。</li>
     <li>虎牙不登录就是原画，不需要登录。</li>
     <li id="persist"></li>
     <li>本页不会显示登录凭据，但局域网内的设备都能打开本页、扫码或退出登录。</li>
@@ -54,7 +55,9 @@
 </main>
 <script>
 const $ = (s, el = document) => el.querySelector(s);
-const timers = {};
+// 每个平台当前进行中的登录会话号。轮询是"上一次返回再发下一次"（微信是 15~30 秒的长轮询，
+// 定时器并发发请求会堆积），换码或退出时递增会话号，让旧的轮询循环自行结束。
+const session = {};
 
 async function api(method, url) {
   const r = await fetch(url, { method });
@@ -72,12 +75,17 @@ function card(p) {
     <h2><span class="name"></span><span class="badge"></span></h2>
     <p class="user"></p>
     <div class="qr"><img alt="登录二维码"><div class="state"></div></div>
-    <div class="row">
-      <button class="primary login">扫码登录</button>
-      <button class="logout">退出登录</button>
-    </div>`;
+    <div class="row"><span class="methods"></span><button class="logout">退出登录</button></div>`;
   $(".name", el).textContent = p.name;
-  $(".login", el).onclick = () => startLogin(p.id);
+  const box = $(".methods", el);
+  box.style.display = "contents";
+  (p.methods || [{ id: "", name: "扫码登录" }]).forEach((m, i) => {
+    const b = document.createElement("button");
+    b.className = "login" + (i === 0 ? " primary" : "");
+    b.textContent = m.name;
+    b.onclick = () => startLogin(p.id, m.id, b);
+    box.appendChild(b);
+  });
   $(".logout", el).onclick = () => logout(p.id);
   render(el, p);
   return el;
@@ -95,7 +103,6 @@ function render(el, p) {
     badge.className = "badge off"; badge.textContent = "未登录";
     user.textContent = "匿名取流，画质受限";
   }
-  $(".login", el).textContent = p.logged_in ? "重新扫码" : "扫码登录";
   $(".logout", el).disabled = !p.logged_in && !p.error;
 }
 
@@ -118,43 +125,57 @@ async function load() {
   }
 }
 
-async function startLogin(id) {
-  clearInterval(timers[id]);
-  const el = $("#p-" + id), qr = $(".qr", el), btn = $(".login", el);
+async function startLogin(id, method, btn) {
+  const sid = session[id] = (session[id] || 0) + 1;
+  const el = $("#p-" + id), qr = $(".qr", el);
   btn.disabled = true;
   qr.style.display = "block";
+  $("img", qr).removeAttribute("src");
   setState(id, "正在生成二维码…");
+  let key;
   try {
-    const { key, png } = await api("POST", "/login/" + id + "/qrcode");
-    $("img", qr).src = png;
-    setState(id, "请用手机 App 扫码");
-    timers[id] = setInterval(() => poll(id, key), 2000);
+    const q = method ? "?method=" + encodeURIComponent(method) : "";
+    const r = await api("POST", "/login/" + id + "/qrcode" + q);
+    key = r.key;
+    $("img", qr).src = r.png;
+    setState(id, method === "weixin" ? "请用微信扫码" : "请用手机 App 扫码");
   } catch (e) {
     setState(id, "生成二维码失败：" + e.message, "err");
+    return;
   } finally {
     btn.disabled = false;
   }
+  poll(id, key, sid);
 }
 
-async function poll(id, key) {
-  try {
-    const r = await api("GET", "/login/" + id + "/poll?key=" + encodeURIComponent(key));
-    if (r.state === "waiting") return;
-    if (r.state === "scanned") return setState(id, "已扫码，请在手机上确认", "warn");
-    clearInterval(timers[id]);
-    if (r.state === "expired") return setState(id, "二维码已过期，请重新生成", "err");
-    if (r.state === "done") {
-      setState(id, "登录成功：" + r.user, "ok");
-      setTimeout(() => { $(".qr", $("#p-" + id)).style.display = "none"; load(); }, 1500);
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+async function poll(id, key, sid) {
+  while (session[id] === sid) {
+    let r;
+    try {
+      r = await api("GET", "/login/" + id + "/poll?key=" + encodeURIComponent(key));
+    } catch (e) {
+      if (session[id] === sid) setState(id, "登录失败：" + e.message, "err");
+      return;
     }
-  } catch (e) {
-    clearInterval(timers[id]);
-    setState(id, "登录失败：" + e.message, "err");
+    if (session[id] !== sid) return;
+    switch (r.state) {
+      case "waiting": break;
+      case "scanned": setState(id, "已扫码，请在手机上确认", "warn"); break;
+      case "expired": return setState(id, "二维码已过期，请重新生成", "err");
+      case "cancel":  return setState(id, "已在手机上取消，请重新生成", "err");
+      case "done":
+        setState(id, "登录成功：" + r.user, "ok");
+        setTimeout(() => { $(".qr", $("#p-" + id)).style.display = "none"; load(); }, 1500);
+        return;
+    }
+    await sleep(1500);
   }
 }
 
 async function logout(id) {
-  clearInterval(timers[id]);
+  session[id] = (session[id] || 0) + 1;
   try { await api("POST", "/login/" + id + "/logout"); } catch (e) { alert(e.message); }
   load();
 }

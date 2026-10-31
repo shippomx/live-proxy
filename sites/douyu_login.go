@@ -50,6 +50,9 @@ func (d *Douyu) QRStart(ctx context.Context) (QRCode, error) {
 }
 
 func (d *Douyu) QRPoll(ctx context.Context, key string) (QRResult, error) {
+	if strings.HasPrefix(key, douyuWxKeyPref) {
+		return d.wxPoll(ctx, key)
+	}
 	u := fmt.Sprintf("%s/japi/scan/auth?time=%d&code=%s", douyuPassport, time.Now().UnixMilli(), url.QueryEscape(key))
 	body, err := Get(ctx, u, douyuLoginHeader)
 	if err != nil {
