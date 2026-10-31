@@ -195,6 +195,26 @@ func TestSplicerExactResumeInterleaveSkew(t *testing.T) {
 	}
 }
 
+// TestSplicerDropsInSegmentRepeat 同一条连接里 CDN 把已推过的 GOP 原样重推（实测虎牙 AL 线路），
+// 重推的帧必须丢掉；时间戳相同但内容不同的帧（B站流里就有）必须保留。
+func TestSplicerDropsInSegmentRepeat(t *testing.T) {
+	var buf bytes.Buffer
+	sp := &flvSplicer{w: &buf}
+	sp.consume(bytes.NewReader(segment(
+		keyM(1000, 1), interM(1040, 2), interM(1080, 3),
+		keyM(1000, 1), interM(1040, 2), interM(1080, 3), // 重推
+		interM(1120, 4), interM(1120, 5), // 同时间戳、不同内容
+	)))
+	got := parseFLV(t, buf.Bytes())
+	var ts []int64
+	for _, g := range got {
+		ts = append(ts, g.ts)
+	}
+	if fmt.Sprint(ts) != "[1000 1040 1080 1120 1120]" || sp.repeats != 3 {
+		t.Fatalf("应丢掉 3 帧重推、保留同时间戳不同内容的帧，实际 %v repeats=%d", ts, sp.repeats)
+	}
+}
+
 // TestSplicerOverlapWithoutExactMatch 重叠部分字节对不上（换了 CDN/转码）时，
 // 仍不能重播：丢掉不晚于上一段末尾的帧，从之后的第一个关键帧接上。
 func TestSplicerOverlapWithoutExactMatch(t *testing.T) {
