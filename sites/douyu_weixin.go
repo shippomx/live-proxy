@@ -59,8 +59,9 @@ var (
 	reWxToken = regexp.MustCompile(`wx_code='([^']*)'`)
 )
 
+// 微信排第一，页面上作为主按钮：多数人手机上必有微信，不一定装了斗鱼 App。
 func (d *Douyu) QRMethods() []QRMethod {
-	return []QRMethod{{ID: "app", Name: "斗鱼 App 扫码"}, {ID: "weixin", Name: "微信扫码"}}
+	return []QRMethod{{ID: "weixin", Name: "微信扫码"}, {ID: "app", Name: "斗鱼 App 扫码"}}
 }
 
 func (d *Douyu) QRStartMethod(ctx context.Context, method string) (QRCode, error) {
@@ -184,9 +185,11 @@ func (d *Douyu) wxPoll(ctx context.Context, key string) (QRResult, error) {
 	if last != 0 {
 		u += "&last=" + strconv.Itoa(last)
 	}
-	ctx, cancel := context.WithTimeout(ctx, douyuWxLongPoll+5*time.Second)
+	// 长轮询单独计时：它本身就要挂 15~30 秒，若和后面的斗鱼回调共用一个超时，
+	// 确认登录那一刻剩给回调（含多次跳转）的时间可能只有几秒，回调被掐断就登录失败。
+	pctx, cancel := context.WithTimeout(ctx, douyuWxLongPoll+5*time.Second)
 	defer cancel()
-	body, err := wxFetch(ctx, wxPollClient, u)
+	body, err := wxFetch(pctx, wxPollClient, u)
 	if err != nil {
 		return QRResult{}, err
 	}
@@ -219,7 +222,9 @@ func (d *Douyu) wxPoll(ctx context.Context, key string) (QRResult, error) {
 	if wxCode == "" {
 		return QRResult{}, fmt.Errorf("%w: 微信确认登录但没有返回 wx_code", ErrParse)
 	}
-	cookie, err := d.wxFinish(ctx, s, wxCode)
+	fctx, fcancel := context.WithTimeout(context.WithoutCancel(ctx), 20*time.Second)
+	defer fcancel()
+	cookie, err := d.wxFinish(fctx, s, wxCode)
 	if err != nil {
 		return QRResult{}, err
 	}

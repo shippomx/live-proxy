@@ -230,12 +230,12 @@ func handleLoginPoll(w http.ResponseWriter, r *http.Request) {
 	}
 	// 微信扫码是长轮询（约 15~30 秒才返回），加上回调种 Cookie，会超过服务器统一的
 	// 40 秒写超时；这里单独放宽，否则成功那一次的响应恰好写不出去。
-	_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(70 * time.Second))
+	_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(110 * time.Second))
 	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
 	defer cancel()
 	res, err := q.QRPoll(ctx, key)
 	if err != nil {
-		log.Warn("查询扫码状态失败", "platform", q.ID(), "err", err)
+		log.Warn("查询扫码状态失败", "platform", q.ID(), "key", keyKind(key), "err", err)
 		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
 		return
 	}
@@ -246,17 +246,24 @@ func handleLoginPoll(w http.ResponseWriter, r *http.Request) {
 
 	// 先确认这份 Cookie 真能登录，再替换正在使用的那份：
 	// 否则一次失败的登录会把原本有效的登录顶掉。
-	a, err := q.Account(ctx, res.Cookie)
+	// 校验单独计时：前面的长轮询和回调可能已经用掉了大半个超时，
+	// 共用的话校验请求会因为超时失败，把一次成功的登录误报成"校验未通过"。
+	vctx, vcancel := context.WithTimeout(context.WithoutCancel(r.Context()), 20*time.Second)
+	defer vcancel()
+	a, err := q.Account(vctx, res.Cookie)
 	if err != nil || !a.LoggedIn {
-		log.Warn("扫码成功但登录校验未通过", "platform", q.ID(), "err", err)
-		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "扫码成功但登录校验未通过，请重试"})
+		// 记下拿到了哪些 Cookie（只记名字）和校验接口的原始返回，才分得清
+		// 是 Cookie 真无效，还是校验接口判断错了。
+		log.Warn("扫码成功但登录校验未通过", "platform", q.ID(), "err", err,
+			"cookies", sites.CookieNames(res.Cookie), "detail", a.Detail)
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": q.Name() + "：扫码成功但登录校验未通过，请重试"})
 		return
 	}
 	setActiveCookie(q, res.Cookie)
 	if err := saveCookie(q.ID(), res.Cookie); err != nil {
 		log.Error("登录成功但保存 Cookie 失败，重启后需重新扫码", "platform", q.ID(), "err", err)
 	}
-	log.Info("扫码登录成功", "platform", q.ID(), "user", a.Name)
+	log.Info("扫码登录成功", "platform", q.ID(), "user", a.Name, "note", a.Note, "cookies", sites.CookieNames(res.Cookie))
 	writeJSON(w, http.StatusOK, map[string]string{"state": string(sites.QRDone), "user": a.Name, "note": a.Note})
 }
 
@@ -275,6 +282,14 @@ func handleLoginLogout(w http.ResponseWriter, r *http.Request) {
 	}
 	loggerFrom(r.Context()).Info("已退出登录", "platform", q.ID())
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+// keyKind 日志里只标出是哪种扫码流程，不记完整 key。
+func keyKind(key string) string {
+	if strings.HasPrefix(key, "wx:") {
+		return "weixin"
+	}
+	return "app"
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {

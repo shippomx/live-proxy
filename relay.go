@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"io"
 	"log/slog"
 	"net"
@@ -77,7 +78,7 @@ func relay(ctx context.Context, w http.ResponseWriter, log *slog.Logger, site si
 			}
 		})
 		if ctx.Err() != nil {
-			log.Info("播放器断开，结束中转", "segments", seg+1, "bytes", sp.written)
+			log.Info("播放器断开，结束中转", "segments", seg+1, "bytes", sp.written, "repeats", sp.repeats)
 			return
 		}
 		if !responded {
@@ -95,7 +96,7 @@ func relay(ctx context.Context, w http.ResponseWriter, log *slog.Logger, site si
 			barren = 0
 		}
 		log.Info("上游断开，重新取流", "segment", seg, "cdn", target.CDN, "dur", time.Since(start).Round(time.Second), "err", err,
-			"resume", sp.resumeSummary(), "dropped", sp.dropped)
+			"resume", sp.resumeSummary(), "dropped", sp.dropped, "repeats", sp.repeats)
 
 		target, err = reresolve(ctx, site, roomID, target.CDN)
 		if err != nil {
@@ -235,6 +236,51 @@ type flvSplicer struct {
 	pending [2][]byte // 续接点之前收到的 sequence header，按需补发
 	how     [2]string // 音频/视频各自的续接方式，供日志核对
 	dropped int       // 因重叠或等关键帧丢弃的帧数
+
+	// 最近写出的音视频帧指纹（原始时间戳 + 数据），用来丢掉 CDN 在同一条连接里重推的 GOP。
+	// 实测虎牙 AL 线路 40 秒内会把一段已推过的 GOP 原样再推一遍（同样的时间戳、同样的字节），
+	// 第一段原样透传时这些帧会直接漏给播放器，表现同样是"重播几秒"。
+	recent  [2]recentSet
+	repeats int // 累计丢弃的重推帧数
+}
+
+// recentSet 定长的指纹集合，按写入顺序淘汰最旧的。1024 帧覆盖视频 30 秒以上，
+// 足以盖住一次 GOP 重推，又不会让内存随直播时长增长。
+type recentSet struct {
+	keys []uint64
+	next int
+	set  map[uint64]struct{}
+}
+
+const recentFrames = 1024
+
+func (r *recentSet) has(k uint64) bool {
+	_, ok := r.set[k]
+	return ok
+}
+
+func (r *recentSet) add(k uint64) {
+	if r.set == nil {
+		r.set = make(map[uint64]struct{}, recentFrames)
+		r.keys = make([]uint64, 0, recentFrames)
+	}
+	if len(r.keys) < recentFrames {
+		r.keys = append(r.keys, k)
+	} else {
+		delete(r.set, r.keys[r.next])
+		r.keys[r.next] = k
+		r.next = (r.next + 1) % recentFrames
+	}
+	r.set[k] = struct{}{}
+}
+
+func frameKey(ts int64, data []byte) uint64 {
+	h := fnv.New64a()
+	var b [8]byte
+	binary.BigEndian.PutUint64(b[:], uint64(ts))
+	h.Write(b[:])
+	h.Write(data)
+	return h.Sum64()
 }
 
 type lastFrame struct {
@@ -345,14 +391,28 @@ func (s *flvSplicer) emit(typ byte, tag, data []byte) error {
 		return s.write(tag)
 	}
 	orig := tagTS(tag)
+	media := !isSequenceHeader(typ, data)
+	var key uint64
+	if media {
+		i := avIndex(typ)
+		key = frameKey(orig, data)
+		// 时间戳没往前走、且和最近写出的某一帧逐字节相同 → CDN 重推，丢掉。
+		// 时间戳相同但内容不同的帧（B站流里就有）照常写出。
+		if l := s.last[i]; l.ok && orig <= l.ts && s.recent[i].has(key) {
+			s.repeats++
+			return nil
+		}
+	}
 	// 音频和视频交错时，紧跟关键帧的音频时间戳可能略早于关键帧，平移后会落到负数。
 	ts := max(orig+s.offset, 0)
 	setTagTS(tag, ts)
 	s.trackTS(ts)
-	if !isSequenceHeader(typ, data) {
-		l := &s.last[avIndex(typ)]
+	if media {
+		i := avIndex(typ)
+		l := &s.last[i]
 		l.ok, l.ts = true, orig
 		l.data = append(l.data[:0], data...)
+		s.recent[i].add(key)
 	}
 	return s.write(tag)
 }

@@ -42,7 +42,7 @@ type QRMethod struct {
 // QRMethodLogin 平台支持多种扫码方式时实现（如斗鱼可用斗鱼 App 或微信扫码）。
 // 不论用哪种方式，QRPoll 都能凭 Key 认出对应的流程，最终得到同一份平台 Cookie。
 type QRMethodLogin interface {
-	QRMethods() []QRMethod // 第一个是默认方式，等同于 QRStart
+	QRMethods() []QRMethod // 第一个是页面上的默认（主）按钮；不带 method 的请求仍走 QRStart
 	QRStartMethod(ctx context.Context, method string) (QRCode, error)
 }
 
@@ -65,6 +65,30 @@ type Account struct {
 	LoggedIn bool
 	Name     string
 	Note     string // 如"大会员"，可为空
+	// Detail 校验过程的诊断信息（接口原始返回摘要、拿到的 Cookie 名），只写日志不给页面：
+	// 校验没通过时，光一句"未通过"无从判断是 Cookie 真无效还是校验接口判断错了。
+	Detail string
+}
+
+// cookieMap 把请求头格式的 Cookie 拆成键值。
+func cookieMap(cookie string) map[string]string {
+	m := map[string]string{}
+	for _, part := range strings.Split(cookie, ";") {
+		if k, v, ok := strings.Cut(strings.TrimSpace(part), "="); ok {
+			m[k] = v
+		}
+	}
+	return m
+}
+
+// cookieNames 只列 Cookie 名，用于日志——值是登录凭据，不能落日志。
+func CookieNames(cookie string) []string {
+	var out []string
+	for k := range cookieMap(cookie) {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // cookieString 把 Cookie 列表拼成请求头格式，同名取最后一个，按名字排序让结果稳定可比。
