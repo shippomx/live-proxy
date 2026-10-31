@@ -146,3 +146,32 @@ func TestDatabaseRejectsMixedRow(t *testing.T) {
 		t.Fatal("同时有房间和 URL 的行应被 CHECK 约束拒绝")
 	}
 }
+
+func TestEPGSourcesSeedOnce(t *testing.T) {
+	ctx := context.Background()
+	s, path := openTemp(t)
+	list, _ := s.EPGSources(ctx)
+	if len(list) != 1 || list[0].URL != DefaultEPGSource || !list[0].Enabled {
+		t.Fatalf("首次建库应写入默认来源: %+v", list)
+	}
+	if ok, _ := s.AddEPGSource(ctx, "http://a/e.xml"); !ok {
+		t.Fatal("添加来源失败")
+	}
+	if ok, _ := s.AddEPGSource(ctx, "http://a/e.xml"); ok {
+		t.Fatal("重复添加应返回 false")
+	}
+	s.SetEPGSourceEnabled(ctx, list[0].ID, false)
+	s.DeleteEPGSource(ctx, list[0].ID)
+
+	// 删掉默认来源后重开：不应再被写回来
+	s.Close()
+	s2, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s2.Close()
+	list, _ = s2.EPGSources(ctx)
+	if len(list) != 1 || list[0].URL != "http://a/e.xml" {
+		t.Fatalf("删掉的默认来源在重启后又出现了: %+v", list)
+	}
+}

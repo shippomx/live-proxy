@@ -281,6 +281,9 @@ func handleDeleteChannel(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
+	if removed {
+		triggerEPG()
+	}
 	writeJSON(w, http.StatusOK, map[string]bool{"removed": removed})
 }
 
@@ -316,6 +319,9 @@ func handleImport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	res.Skipped = skipped
+	if res.Added > 0 {
+		triggerEPG() // 新频道可能有节目单
+	}
 	loggerFrom(r.Context()).Info("导入 m3u", "added", res.Added, "existed", res.Existed, "skipped", res.Skipped)
 	writeJSON(w, http.StatusOK, res)
 }
@@ -328,11 +334,20 @@ func handlePlaylist(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	// 对上节目单的频道补 tvg-id：有的播放器只按 tvg-id 匹配节目单，不看频道名。
+	matched := matchedEPGIDs()
 	chs := make([]playlist.Channel, len(list))
 	for i, c := range list {
 		chs[i] = c.Channel
+		if c.Platform == "" && matched[c.Name] && attrValue(c.Attrs, "tvg-id") == "" {
+			chs[i].Attrs = strings.TrimSpace(c.Attrs + ` tvg-id="` + strings.ReplaceAll(c.Name, `"`, "'") + `"`)
+		}
+	}
+	epgURL := ""
+	if hasEPG() {
+		epgURL = "http://" + r.Host + "/epg.xml.gz"
 	}
 	w.Header().Set("Content-Type", "audio/x-mpegurl; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
-	playlist.Write(w, chs, "http://"+r.Host)
+	playlist.WriteEPG(w, chs, "http://"+r.Host, epgURL)
 }

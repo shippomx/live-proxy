@@ -155,9 +155,16 @@ func parseExtinf(line string) Channel {
 }
 
 // Write 输出 m3u。属性值里的双引号会破坏格式，替换成单引号。
-func Write(w io.Writer, chs []Channel, base string) error {
+func Write(w io.Writer, chs []Channel, base string) error { return WriteEPG(w, chs, base, "") }
+
+// WriteEPG 同 Write，epgURL 非空时写进文件头的 x-tvg-url，播放器据此自动加载节目单。
+func WriteEPG(w io.Writer, chs []Channel, base, epgURL string) error {
 	bw := bufio.NewWriter(w)
-	bw.WriteString("#EXTM3U\n")
+	if epgURL != "" {
+		fmt.Fprintf(bw, "#EXTM3U x-tvg-url=\"%s\"\n", quoteSafe(epgURL))
+	} else {
+		bw.WriteString("#EXTM3U\n")
+	}
 	for _, c := range chs {
 		bw.WriteString("#EXTINF:-1")
 		if c.Attrs != "" {

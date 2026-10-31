@@ -64,6 +64,7 @@ func main() {
 	registerLoginRoutes(mux)
 	registerBrowseRoutes(mux)
 	registerWatchRoutes(mux)
+	registerEPGRoutes(mux)
 	mux.HandleFunc("/", handleStream)
 
 	dbPath := ":memory:"
@@ -82,6 +83,7 @@ func main() {
 		os.Exit(1)
 	}
 	defer db.Close()
+	startEPG(context.Background())
 
 	srv := &http.Server{
 		Addr:              *addr,

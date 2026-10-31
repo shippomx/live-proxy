@@ -78,6 +78,10 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("初始化表结构: %w", err)
 	}
+	if err := initEPG(db); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("初始化节目单来源: %w", err)
+	}
 	return &Store{db: db}, nil
 }
 
@@ -222,4 +226,82 @@ func (s *Store) RoomKeys(ctx context.Context) ([]string, error) {
 		out = append(out, k)
 	}
 	return out, rows.Err()
+}
+
+// DefaultEPGSource 首次建库时写入的节目单来源。2026-10-31 在 R5S 上实测可直连，
+// 覆盖 scdx.m3u 262 个电视频道中的 104 个，是几个可达来源里最全的。
+const DefaultEPGSource = "https://epg.pw/xmltv/epg_CN.xml"
+
+// initEPG 建节目单来源表。只在表第一次创建时写入默认来源：用户删掉它之后不应在重启时又冒出来。
+func initEPG(db *sql.DB) error {
+	var n int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='epg_sources'`).Scan(&n); err != nil {
+		return err
+	}
+	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS epg_sources (
+		id         INTEGER PRIMARY KEY AUTOINCREMENT,
+		url        TEXT    NOT NULL UNIQUE,
+		enabled    INTEGER NOT NULL DEFAULT 1,
+		created_at INTEGER NOT NULL
+	)`); err != nil {
+		return err
+	}
+	if n == 0 {
+		_, err := db.Exec(`INSERT OR IGNORE INTO epg_sources (url, created_at) VALUES (?, ?)`, DefaultEPGSource, time.Now().Unix())
+		return err
+	}
+	return nil
+}
+
+type EPGSource struct {
+	ID        int64  `json:"id"`
+	URL       string `json:"url"`
+	Enabled   bool   `json:"enabled"`
+	CreatedAt int64  `json:"created_at"`
+}
+
+// EPGSources 按加入顺序返回：合并节目单时排在前面的来源优先。
+func (s *Store) EPGSources(ctx context.Context) ([]EPGSource, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id, url, enabled, created_at FROM epg_sources ORDER BY id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []EPGSource{}
+	for rows.Next() {
+		var e EPGSource
+		if err := rows.Scan(&e.ID, &e.URL, &e.Enabled, &e.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
+// AddEPGSource 已存在时返回 false，不改动。
+func (s *Store) AddEPGSource(ctx context.Context, url string) (bool, error) {
+	res, err := s.db.ExecContext(ctx, `INSERT OR IGNORE INTO epg_sources (url, created_at) VALUES (?, ?)`, url, time.Now().Unix())
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	return n == 1, err
+}
+
+func (s *Store) DeleteEPGSource(ctx context.Context, id int64) (bool, error) {
+	res, err := s.db.ExecContext(ctx, `DELETE FROM epg_sources WHERE id = ?`, id)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	return n > 0, err
+}
+
+func (s *Store) SetEPGSourceEnabled(ctx context.Context, id int64, on bool) (bool, error) {
+	res, err := s.db.ExecContext(ctx, `UPDATE epg_sources SET enabled = ? WHERE id = ?`, on, id)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	return n > 0, err
 }

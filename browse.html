@@ -289,6 +289,7 @@
   <symbol id="i-key" viewBox="0 0 24 24"><circle cx="7.5" cy="15.5" r="5.5"/><path d="m21 2-9.6 9.6M15.5 7.5l3 3L22 7l-3-3"/></symbol>
   <symbol id="i-play" viewBox="0 0 24 24"><path d="M8 5.14v13.72a1 1 0 0 0 1.52.85l10.6-6.86a1 1 0 0 0 0-1.7L9.52 4.29A1 1 0 0 0 8 5.14z"/></symbol>
   <symbol id="i-x" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></symbol>
+  <symbol id="i-cal" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18M8 14h2M14 14h2M8 18h2"/></symbol>
   <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M3 12a9 9 0 0 1 15-6.7L21 8M21 3v5h-5M21 12a9 9 0 0 1-15 6.7L3 16M3 21v-5h5"/></symbol>
 </svg>
 
@@ -309,6 +310,7 @@
       <h2>频道管理</h2>
       <a data-view="channels" href="#/channels"><svg class="i"><use href="#i-list"/></svg>频道列表<span class="count" id="navCount"></span></a>
       <a data-view="import" href="#/import"><svg class="i"><use href="#i-upload"/></svg>导入与添加</a>
+      <a data-view="epg" href="#/epg"><svg class="i"><use href="#i-cal"/></svg>节目单</a>
     </nav>
     <div class="side-foot">
       <a href="/login"><svg class="i" style="width:14px;height:14px;vertical-align:-2px"><use href="#i-key"/></svg> 扫码登录（高画质）</a>
@@ -393,7 +395,7 @@ const siteName = id => (state.sites.find(s => s.id === id) || {}).name || id;
 // 视图写进地址栏：刷新不丢位置，浏览器"后退"能回到上一个分区。
 function parseRoute() {
   const parts = location.hash.replace(/^#\/?/, "").split("/").map(decodeURIComponent).filter(Boolean);
-  if (parts[0] === "channels" || parts[0] === "import") return { view: parts[0] };
+  if (["channels", "import", "epg"].includes(parts[0])) return { view: parts[0] };
   const site = state.sites.some(s => s.id === parts[0]) ? parts[0] : (loadPref().site || state.sites[0].id);
   const view = ["recommend", "category", "search"].includes(parts[1]) ? parts[1] : "recommend";
   return { site, view, a: parts[2], b: parts[3], c: parts[4] };
@@ -981,6 +983,88 @@ async function openPlayer({ platform, room, channel }) {
 }
 function closePlayer() { stopEngine(); showMsg(""); const d = $("#player"); if (d.open) d.close(); }
 
+// ---------- 节目单 ----------
+let epgPoll = 0;
+async function viewEPG(v) {
+  setCrumbs(["频道管理", "节目单"]);
+  clearTimeout(epgPoll);
+  const refreshBtn = el("button", { class: "btn" }, icon("refresh", "width:16px;height:16px"), "立即更新");
+  v.append(head("节目单", "从下面的来源拉取节目单，只保留播放列表里有的频道和前 1 天到后 3 天的节目，每 6 小时自动更新。电视订阅播放列表时会自动加载。", refreshBtn));
+  const body = el("div", { class: "state" }, "加载中…");
+  v.append(body);
+  let st;
+  try { st = await api("/api/epg"); } catch (e) { body.textContent = "加载失败：" + e.message; return; }
+  refreshBtn.disabled = st.building;
+  refreshBtn.addEventListener("click", async () => {
+    refreshBtn.disabled = true;
+    try { await api("/api/epg/refresh", { method: "POST" }); toast("已开始更新，几十秒后完成"); setTimeout(() => location.hash === "#/epg" && render(), 1500); }
+    catch (e) { toast("更新失败：" + e.message, true); refreshBtn.disabled = false; }
+  });
+  const total = st.matched.length + st.unmatched.length;
+  const when = st.built_at ? new Date(st.built_at * 1000).toLocaleString("zh-CN", { hour12: false }) : "还没生成";
+  const stats = el("div", { class: "stats" },
+    ...[["覆盖频道", total ? `${st.matched.length} / ${total}` : "-"], ["节目条数", String(st.programmes || 0)],
+        ["文件大小", st.size ? (st.size / 1024).toFixed(0) + " KB" : "-"], ["更新时间", st.building ? "更新中…" : when]]
+      .map(([k, n]) => el("div", { class: "panel stat" }, el("div", { class: "k" }, k), el("div", { class: "v", style: "font-size:20px" }, n))));
+
+  const urlRow = el("section", { class: "panel", style: "margin-bottom:16px" },
+    el("div", { class: "panel-body", style: "display:flex;gap:12px;align-items:center;flex-wrap:wrap" },
+      el("span", { class: "hint", style: "margin:0" }, "节目单地址"),
+      el("code", { class: "mono", style: "flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis" }, st.url),
+      el("button", { class: "btn sm", onclick: () => copy(st.url) }, icon("copy", "width:14px;height:14px"), "复制"),
+      st.error ? el("span", { class: "hint", style: "color:var(--danger);margin:0;width:100%" }, "上次更新失败：" + st.error) : null,
+      el("span", { class: "hint", style: "margin:0;width:100%" }, "已写进播放列表文件头（x-tvg-url），大多数播放器会自动使用；不支持的播放器可以把这个地址手动填进节目单设置。")));
+
+  const input = el("input", { type: "text", placeholder: "https://…/e.xml 或 .xml.gz", "aria-label": "节目单地址", style: "flex:1;min-width:200px" });
+  const addBtn = el("button", { class: "btn primary" }, icon("plus", "width:16px;height:16px"), "添加来源");
+  const add = async () => {
+    const u = input.value.trim(); if (!u) return;
+    addBtn.disabled = true;
+    try {
+      const r = await api("/api/epg/sources", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ url: u }) });
+      toast(r.added ? "已添加，几秒后开始更新" : "这个来源已经在列表里");
+      input.value = ""; setTimeout(render, 600);
+    } catch (e) { toast("添加失败：" + e.message, true); } finally { addBtn.disabled = false; }
+  };
+  addBtn.addEventListener("click", add);
+  input.addEventListener("keydown", e => { if (e.key === "Enter") add(); });
+
+  const rows = st.sources.map((s, i) => {
+    const sw = el("input", { type: "checkbox", checked: s.enabled, "aria-label": "启用 " + s.url });
+    sw.addEventListener("change", async () => {
+      try { await api("/api/epg/sources/" + s.id, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ enabled: sw.checked }) }); toast(sw.checked ? "已启用" : "已停用"); }
+      catch (e) { sw.checked = !sw.checked; toast("操作失败：" + e.message, true); }
+    });
+    const stat = s.stat;
+    const info = !s.enabled ? "已停用" : !stat ? "等待更新" : stat.error ? "失败：" + stat.error : `来源 ${stat.channels} 个频道，提供了 ${stat.matched} 个频道、${stat.programmes} 条节目`;
+    return el("tr", {},
+      el("td", { style: "width:36px" }, sw),
+      el("td", { class: "mono", style: "color:var(--muted)" }, String(i + 1)),
+      el("td", { class: "addr mono", title: s.url, style: "max-width:420px" }, s.url),
+      el("td", { style: stat && stat.error ? "color:var(--danger)" : "color:var(--muted)" }, info),
+      el("td", { class: "ops" }, el("button", { class: "btn icon sm danger", "aria-label": "删除来源", title: "删除", onclick: async () => {
+        if (!confirm("删除这个节目单来源？\n" + s.url)) return;
+        try { await api("/api/epg/sources/" + s.id, { method: "DELETE" }); toast("已删除"); render(); } catch (e) { toast("删除失败：" + e.message, true); }
+      } }, icon("trash", "width:15px;height:15px"))));
+  });
+
+  const unmatched = st.unmatched.length ? el("details", { class: "panel", style: "margin-top:16px" },
+    el("summary", { style: "padding:12px 16px;cursor:pointer;font-weight:600" }, `没有节目单的频道（${st.unmatched.length}）`),
+    el("div", { class: "panel-body", style: "padding-top:0" },
+      el("p", { class: "hint", style: "margin-top:0" }, "多数是节目单来源里没有这个台，或叫法不同（如 SCTV-2 在节目单里叫“四川文化旅游”）。可以再添加覆盖这些频道的来源。"),
+      el("div", { class: "ch-jump" }, ...st.unmatched.map(n => el("span", { class: "badge" }, n))))) : null;
+
+  body.replaceWith(stats, urlRow, el("section", { class: "panel" },
+    el("div", { class: "panel-head" }, el("h2", {}, "来源"), el("span", { class: "hint", style: "margin:0" }, "排在前面的优先：同一个频道由第一个能提供它的来源负责")),
+    el("div", { class: "table-wrap" }, el("table", {},
+      el("thead", {}, el("tr", {}, el("th", {}, "启用"), el("th", {}, "#"), el("th", {}, "地址"), el("th", {}, "上次结果"), el("th", { style: "text-align:right" }, "操作"))),
+      el("tbody", {}, ...(rows.length ? rows : [el("tr", {}, el("td", { colspan: "5", class: "state" }, "还没有来源"))])))),
+    el("div", { class: "panel-body", style: "border-top:1px solid var(--border)" }, el("div", { class: "toolbar" }, input, addBtn))), unmatched);
+
+  // 正在更新时轮询状态，完成后自动刷新页面上的数字。
+  if (st.building) epgPoll = setTimeout(() => location.hash === "#/epg" && render(), 3000);
+}
+
 // ---------- 渲染 ----------
 function setCrumbs(items) {
   $("#crumbs").replaceChildren(...items.flatMap((it, i) => {
@@ -993,7 +1077,7 @@ function setCrumbs(items) {
 
 function render() {
   const r = parseRoute();
-  const isBrowse = r.view !== "channels" && r.view !== "import";
+  const isBrowse = !["channels", "import", "epg"].includes(r.view);
   const site = isBrowse ? r.site : (loadPref().site || state.sites[0].id);
   if (isBrowse) savePref(site);
   for (const b of $("#sites").children) b.setAttribute("aria-pressed", String(b.dataset.id === site));
@@ -1006,7 +1090,7 @@ function render() {
   document.body.classList.remove("nav-open");
   const v = $("#view");
   v.replaceChildren();
-  ({ recommend: viewRecommend, category: viewCategory, search: viewSearch, channels: viewChannels, import: viewImport })[r.view](v, r);
+  ({ recommend: viewRecommend, category: viewCategory, search: viewSearch, channels: viewChannels, import: viewImport, epg: viewEPG })[r.view](v, r);
 }
 
 async function init() {
