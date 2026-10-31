@@ -141,6 +141,11 @@ func handleProbe(w http.ResponseWriter, r *http.Request) {
 	head := make([]byte, 512)
 	n, _ := io.ReadAtLeast(resp.Body, head, 8)
 	resp.Body.Close()
+	if n == 0 {
+		// udpxy 对没有信号的组播照样返回 200，只是一直不给数据；不单独说明会被误报成"格式不认识"。
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "连上了频道源，但一直没有收到数据：频道可能已停播，或这条线路没有开通它"})
+		return
+	}
 	kind := sniff(resp.Header.Get("Content-Type"), head[:n])
 	if kind == "" {
 		writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": "无法识别的流格式（Content-Type: " + resp.Header.Get("Content-Type") + "）"})
