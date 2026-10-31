@@ -22,6 +22,9 @@ type Browser interface {
 	CategoryRooms(ctx context.Context, sub SubCategory, page int) (RoomPage, error)
 	RecommendRooms(ctx context.Context, page int) (RoomPage, error)
 	SearchRooms(ctx context.Context, keyword string, page int) (RoomPage, error)
+	// SearchAnchors 按主播名搜索。结果里只有主播名、头像、房间号和是否在播，
+	// 没有标题和封面；未开播的主播也会返回，方便先收藏、开播后在电视上看。
+	SearchAnchors(ctx context.Context, keyword string, page int) (RoomPage, error)
 	// RoomInfo 按房间号查房间。用于"按房间号添加收藏"时拿到主播名和封面；
 	// 未开播也要返回信息（Live=false），房间不存在才返回 ErrRoomInvalid。
 	RoomInfo(ctx context.Context, roomID string) (Room, error)

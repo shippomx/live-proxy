@@ -154,6 +154,51 @@ func (d *Douyu) SearchRooms(ctx context.Context, keyword string, page int) (Room
 	return out, nil
 }
 
+func (d *Douyu) SearchAnchors(ctx context.Context, keyword string, page int) (RoomPage, error) {
+	q := url.Values{"kw": {keyword}, "page": {strconv.Itoa(pageOrFirst(page))}, "pageSize": {"20"}, "filterType": {"1"}}
+	api := "https://www.douyu.com/japi/search/api/searchUser?" + q.Encode()
+	var r struct {
+		Error int    `json:"error"`
+		Msg   string `json:"msg"`
+		Data  struct {
+			RelateUser []struct {
+				AnchorInfo struct {
+					Rid      jsonStr `json:"rid"`
+					NickName string  `json:"nickName"`
+					Avatar   string  `json:"avatar"`
+					IsLive   jsonNum `json:"isLive"`
+					RoomType jsonNum `json:"roomType"`
+					Fans     jsonNum `json:"fansNum"`
+				} `json:"anchorInfo"`
+			} `json:"relateUser"`
+		} `json:"data"`
+	}
+	header := map[string]string{
+		"Referer": "https://www.douyu.com/search/",
+		"Cookie":  "dy_did=" + douyuDid + ";acf_did=" + douyuDid,
+	}
+	if err := getJSON(ctx, api, header, &r); err != nil {
+		return RoomPage{}, err
+	}
+	if r.Error != 0 {
+		return RoomPage{}, &UpstreamError{Endpoint: api, Err: fmt.Errorf("error=%d %s", r.Error, r.Msg)}
+	}
+	var out RoomPage
+	for _, it := range r.Data.RelateUser {
+		a := it.AnchorInfo
+		if a.Rid == "" || a.Rid == "0" {
+			continue
+		}
+		out.Items = append(out.Items, Room{
+			RoomID: string(a.Rid), UserName: a.NickName, Avatar: a.Avatar, Online: int64(a.Fans),
+			// roomType 非 0 是轮播/特殊房间，与取流的判断一致，不算在播。
+			Live: a.IsLive == 1 && a.RoomType == 0,
+		})
+	}
+	out.HasMore = len(out.Items) > 0
+	return out, nil
+}
+
 func (d *Douyu) RoomInfo(ctx context.Context, roomID string) (Room, error) {
 	body, err := Get(ctx, "https://www.douyu.com/betard/"+url.PathEscape(roomID),
 		map[string]string{"Referer": "https://www.douyu.com/" + roomID})

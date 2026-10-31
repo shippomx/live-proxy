@@ -190,6 +190,22 @@
   .preview img { width: 40px; height: 40px; border-radius: 50%; object-fit: cover; background: var(--surface-2); }
 
   img.broken { visibility: hidden; }
+  .seg-tabs { display: inline-flex; gap: 2px; padding: 3px; background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius); }
+  .seg-tabs button { border: 0; background: transparent; color: var(--muted); font: inherit; font-size: 13px; padding: 0 var(--s3); height: 28px; border-radius: 6px; cursor: pointer; }
+  .seg-tabs button[aria-pressed="true"] { background: var(--surface); color: var(--text); font-weight: 600; box-shadow: var(--shadow); }
+  .anchors { display: grid; gap: var(--s3); grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); }
+  .anchor { display: flex; align-items: center; gap: var(--s3); padding: var(--s3); background: var(--surface);
+            border: 1px solid var(--border); border-radius: 10px; }
+  .anchor .ava { position: relative; flex: none; }
+  .anchor .ava img { width: 48px; height: 48px; border-radius: 50%; object-fit: cover; background: var(--surface-2); display: block; }
+  .anchor .ava .dot { position: absolute; right: 0; bottom: 0; width: 12px; height: 12px; border-radius: 50%;
+                      background: var(--ok); border: 2px solid var(--surface); }
+  .anchor .txt { flex: 1; min-width: 0; }
+  .anchor .n { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .anchor .m { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .live-badge { display: inline-flex; align-items: center; height: 18px; padding: 0 6px; border-radius: 4px; font-size: 11px;
+                background: var(--ok); color: #fff; margin-left: 6px; vertical-align: 1px; }
+  @media (prefers-color-scheme: dark) { .live-badge { color: #052e16; } }
   button.cover { display: block; width: 100%; border: 0; padding: 0; cursor: pointer; color: inherit; font: inherit; }
   .cover .play { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
                  background: rgba(15, 23, 42, .35); opacity: 0; transition: opacity .15s; }
@@ -425,9 +441,26 @@ function roomCard(platform, r) {
         icon("copy", "width:16px;height:16px"))));
 }
 
+// 主播搜索结果：没有封面和标题，未开播的也会返回（可以先收藏，开播后在电视上看）。
+function anchorCard(platform, r) {
+  const star = el("button", { class: "btn icon sm star" }, icon("star", "width:16px;height:16px"));
+  setStar(star, state.favs.has(platform + "/" + r.room_id));
+  star.addEventListener("click", () => toggleFav(star, platform, r));
+  return el("article", { class: "anchor" },
+    el("div", { class: "ava" },
+      el("img", { src: r.avatar || "", alt: "", loading: "lazy", referrerpolicy: "no-referrer" }),
+      r.live ? el("span", { class: "dot", title: "直播中" }) : null),
+    el("div", { class: "txt" },
+      el("div", { class: "n", title: r.user_name }, r.user_name, r.live ? el("span", { class: "live-badge" }, "直播中") : null),
+      el("div", { class: "m" }, `房间 ${r.room_id}` + (r.online ? ` · 粉丝 ${fmtNum(r.online)}` : ""))),
+    r.live ? el("button", { class: "btn icon sm", "aria-label": "观看 " + r.user_name, title: "观看", onclick: () => openPlayer({ platform, room: r }) }, icon("play", "width:16px;height:16px")) : null,
+    star);
+}
+
 // pager：fetchPage(page) → {has_more, items}；翻页去重（列表在翻页期间会变动）。
-function pager(container, platform, fetchPage) {
-  const grid = el("div", { class: "grid" }, ...Array.from({ length: 10 }, () => el("div", { class: "skeleton" })));
+function pager(container, platform, fetchPage, card = roomCard, gridClass = "grid") {
+  const grid = el("div", { class: gridClass }, ...Array.from({ length: gridClass === "grid" ? 10 : 0 }, () => el("div", { class: "skeleton" })));
+  if (gridClass !== "grid") grid.append(el("div", { class: "state", style: "grid-column:1/-1" }, "搜索中…"));
   const moreWrap = el("div", { class: "more-wrap" });
   container.append(grid, moreWrap);
   let page = 1, first = true;
@@ -440,7 +473,7 @@ function pager(container, platform, fetchPage) {
       for (const r of data.items) {
         if (seen.has(r.room_id)) continue;
         seen.add(r.room_id);
-        grid.append(roomCard(platform, r));
+        grid.append(card(platform, r));
       }
       moreWrap.replaceChildren();
       if (!grid.children.length) grid.replaceWith(el("div", { class: "state" }, "没有直播间"));
@@ -518,16 +551,27 @@ function setCrumbsForSub(p, r) {
   if (sub) setCrumbs([siteName(p), { text: "分区", href: `#/${p}/category/${r.a}` }, sub.name]);
 }
 
+// #/{p}/search/{关键词}[/user]：带 /user 时按主播搜索。
 function viewSearch(v, r) {
   const p = r.site;
   const kw = r.a || "";
-  setCrumbs([siteName(p), "搜索", ...(kw ? [kw] : [])]);
-  const input = el("input", { type: "search", placeholder: "房间标题或主播名", value: kw, "aria-label": "搜索关键词", style: "width:280px" });
-  const submit = () => { const k = input.value.trim(); if (k) go(`#/${p}/search/${encodeURIComponent(k)}`); };
+  const byUser = r.b === "user" || (!kw && state.searchUser);
+  state.searchUser = byUser;
+  setCrumbs([siteName(p), "搜索", ...(kw ? [(byUser ? "主播：" : "") + kw] : [])]);
+  const input = el("input", { type: "search", placeholder: byUser ? "主播昵称" : "房间标题或主播名", value: kw, "aria-label": "搜索关键词", style: "width:260px" });
+  const target = (k, user) => `#/${p}/search/${encodeURIComponent(k)}` + (user ? "/user" : "");
+  const submit = () => { const k = input.value.trim(); if (k) go(target(k, byUser)); };
   input.addEventListener("keydown", e => { if (e.key === "Enter") submit(); });
-  v.append(head("搜索", "在 " + siteName(p) + " 搜索直播间。", input,
+  const mode = el("div", { class: "seg-tabs", role: "group", "aria-label": "搜索类型" },
+    ...[["直播间", false], ["主播", true]].map(([label, user]) => el("button", { "aria-pressed": String(user === byUser), onclick: () => {
+      state.searchUser = user;
+      const k = input.value.trim();
+      if (k) go(target(k, user)); else render();
+    } }, label)));
+  v.append(head("搜索", byUser ? `在 ${siteName(p)} 按主播昵称搜索，未开播的主播也能收藏。` : `在 ${siteName(p)} 搜索正在直播的房间。`, mode, input,
     el("button", { class: "btn primary", onclick: submit }, icon("search", "width:16px;height:16px"), "搜索")));
-  if (kw) pager(v, p, page => api(`/api/sites/${p}/search?kw=${encodeURIComponent(kw)}&page=${page}`));
+  const q = page => api(`/api/sites/${p}/search?kw=${encodeURIComponent(kw)}&page=${page}` + (byUser ? "&type=user" : ""));
+  if (kw) byUser ? pager(v, p, q, anchorCard, "anchors") : pager(v, p, q);
   else v.append(el("div", { class: "state" }, "输入关键词后回车"));
   input.focus();
 }

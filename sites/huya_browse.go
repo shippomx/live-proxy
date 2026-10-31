@@ -174,6 +174,48 @@ func (h *Huya) SearchRooms(ctx context.Context, keyword string, page int) (RoomP
 	return out, nil
 }
 
+func (h *Huya) SearchAnchors(ctx context.Context, keyword string, page int) (RoomPage, error) {
+	const rows = 20
+	page = pageOrFirst(page)
+	q := url.Values{
+		"m": {"Search"}, "do": {"getSearchContent"}, "q": {keyword},
+		"uid": {"0"}, "v": {"1"}, "typ": {"-5"}, "livestate": {"0"},
+		"rows": {strconv.Itoa(rows)}, "start": {strconv.Itoa((page - 1) * rows)},
+	}
+	var r struct {
+		Response map[string]json.RawMessage `json:"response"`
+	}
+	if err := getJSON(ctx, "https://search.cdn.huya.com/?"+q.Encode(), nil, &r); err != nil {
+		return RoomPage{}, err
+	}
+	var users struct {
+		NumFound int `json:"numFound"`
+		Docs     []struct {
+			RoomID     jsonStr `json:"room_id"`
+			GameNick   string  `json:"game_nick"`
+			GameAvatar string  `json:"game_avatarUrl180"`
+			GameLiveOn bool    `json:"gameLiveOn"`
+			Activity   jsonNum `json:"game_activityCount"` // 订阅数
+		} `json:"docs"`
+	}
+	if raw := r.Response["1"]; len(raw) > 0 && raw[0] == '{' {
+		if err := json.Unmarshal(raw, &users); err != nil {
+			return RoomPage{}, fmt.Errorf("%w: huya search user: %v", ErrParse, err)
+		}
+	}
+	out := RoomPage{HasMore: users.NumFound > page*rows}
+	for _, it := range users.Docs {
+		if it.RoomID == "" || it.RoomID == "0" {
+			continue // 没开过直播间的用户，没有可播放的房间号
+		}
+		out.Items = append(out.Items, Room{
+			RoomID: string(it.RoomID), UserName: it.GameNick, Avatar: it.GameAvatar,
+			Online: int64(it.Activity), Live: it.GameLiveOn,
+		})
+	}
+	return out, nil
+}
+
 // RoomInfo 复用取流用的 profileRoom 接口：同一个请求里就有主播名、标题和开播状态。
 func (h *Huya) RoomInfo(ctx context.Context, roomID string) (Room, error) {
 	api := "https://mp.huya.com/cache.php?m=Live&do=profileRoom&showSecret=1&roomid=" + url.QueryEscape(roomID)

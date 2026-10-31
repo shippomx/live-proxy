@@ -176,7 +176,12 @@ func handleSearch(w http.ResponseWriter, r *http.Request, b sites.Browser) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "缺少关键词"})
 		return
 	}
-	page, err := b.SearchRooms(r.Context(), kw, pageParam(r))
+	// type=user 按主播搜索；返回结构相同，Online 是粉丝/订阅数而不是在线人数。
+	search := b.SearchRooms
+	if r.URL.Query().Get("type") == "user" {
+		search = b.SearchAnchors
+	}
+	page, err := search(r.Context(), kw, pageParam(r))
 	writePage(w, r, page, err)
 }
 

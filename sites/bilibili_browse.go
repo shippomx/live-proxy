@@ -362,6 +362,50 @@ func (b *Bilibili) SearchRooms(ctx context.Context, keyword string, page int) (R
 	return out, nil
 }
 
+func (b *Bilibili) SearchAnchors(ctx context.Context, keyword string, page int) (RoomPage, error) {
+	page = pageOrFirst(page)
+	q := url.Values{
+		"context": {""}, "search_type": {"live_user"}, "cover_type": {"user_cover"},
+		"order": {""}, "keyword": {keyword}, "category_id": {""},
+		"__refresh__": {""}, "_extra": {""}, "highlight": {"0"}, "single_column": {"0"},
+		"page": {strconv.Itoa(page)},
+	}
+	api := "https://api.bilibili.com/x/web-interface/search/type?" + q.Encode()
+	var r struct {
+		biliEnvelope
+		Data struct {
+			NumPages int `json:"numPages"`
+			Result   []struct {
+				RoomID     jsonStr `json:"roomid"`
+				Uname      string  `json:"uname"`
+				Uface      string  `json:"uface"`
+				IsLive     bool    `json:"is_live"`
+				Attentions jsonNum `json:"attentions"` // 粉丝数
+			} `json:"result"`
+		} `json:"data"`
+	}
+	if err := getJSON(ctx, api, b.biliHeader(ctx), &r); err != nil {
+		return RoomPage{}, err
+	}
+	if err := r.err(api); err != nil {
+		return RoomPage{}, err
+	}
+	out := RoomPage{HasMore: page < r.Data.NumPages}
+	for _, it := range r.Data.Result {
+		if it.RoomID == "" || it.RoomID == "0" {
+			continue
+		}
+		out.Items = append(out.Items, Room{
+			RoomID:   string(it.RoomID),
+			UserName: biliEmTagRe.ReplaceAllString(it.Uname, ""),
+			Avatar:   biliImg(it.Uface, "@100w.jpg"),
+			Online:   int64(it.Attentions),
+			Live:     it.IsLive,
+		})
+	}
+	return out, nil
+}
+
 func (b *Bilibili) RoomInfo(ctx context.Context, roomID string) (Room, error) {
 	const base = "https://api.live.bilibili.com/xlive/web-room/v1/index/getInfoByRoom"
 	var r struct {

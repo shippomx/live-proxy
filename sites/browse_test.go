@@ -127,6 +127,19 @@ func TestBrowseLive(t *testing.T) {
 				t.Fatalf("搜索没有结果")
 			}
 
+			anchors, err := b.SearchAnchors(ctx, "英雄联盟", 1)
+			if err != nil {
+				t.Fatalf("SearchAnchors: %v", err)
+			}
+			if len(anchors.Items) == 0 || anchors.Items[0].RoomID == "" || anchors.Items[0].UserName == "" {
+				t.Fatalf("主播搜索没有结果或缺字段: %+v", anchors.Items)
+			}
+			// 搜到的房间号必须能被 RoomInfo 认出来，否则收藏后播不了。
+			if _, err := b.RoomInfo(ctx, anchors.Items[0].RoomID); err != nil {
+				t.Fatalf("主播搜索结果的房间号 %s 查不到: %v", anchors.Items[0].RoomID, err)
+			}
+			t.Logf("主播搜索 %d 个，首个 %s(%s) live=%v", len(anchors.Items), anchors.Items[0].UserName, anchors.Items[0].RoomID, anchors.Items[0].Live)
+
 			first := rec.Items[0]
 			info, err := b.RoomInfo(ctx, first.RoomID)
 			if err != nil {
