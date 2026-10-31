@@ -131,7 +131,8 @@ func handleProbe(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": "浏览器只能播放 http(s) 地址，这个频道是 " + strings.SplitN(c.URL, ":", 2)[0] + "，请在电视上观看"})
 		return
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), 12*time.Second)
+	// 8 秒：没信号的组播只能等超时才能判定，批量检测时太长会让整轮检测拖到几分钟。
+	ctx, cancel := context.WithTimeout(r.Context(), 8*time.Second)
 	defer cancel()
 	resp, err := fetch(ctx, c, c.URL)
 	if err != nil {
