@@ -190,6 +190,22 @@ func (s *Store) List(ctx context.Context) ([]Channel, error) {
 	return out, rows.Err()
 }
 
+// ErrNotFound 按 ID 找不到频道。
+var ErrNotFound = errors.New("频道不存在")
+
+// Get 按 ID 取一个频道。
+func (s *Store) Get(ctx context.Context, id int64) (Channel, error) {
+	var c Channel
+	err := s.db.QueryRowContext(ctx, `SELECT id, name, group_name, logo,
+		COALESCE(platform, ''), COALESCE(room_id, ''), query, COALESCE(url, ''), attrs, source, created_at
+		FROM channels WHERE id = ?`, id).Scan(&c.ID, &c.Name, &c.Group, &c.Logo, &c.Platform, &c.RoomID,
+		&c.Query, &c.URL, &c.Attrs, &c.Source, &c.CreatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Channel{}, ErrNotFound
+	}
+	return c, err
+}
+
 // RoomKeys 库里所有直播间的 "platform/room_id"，浏览页据此给已收藏的房间点亮星标。
 func (s *Store) RoomKeys(ctx context.Context) ([]string, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT platform || '/' || room_id FROM channels WHERE platform IS NOT NULL ORDER BY id`)

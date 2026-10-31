@@ -63,6 +63,7 @@ func main() {
 	})
 	registerLoginRoutes(mux)
 	registerBrowseRoutes(mux)
+	registerWatchRoutes(mux)
 	mux.HandleFunc("/", handleStream)
 
 	dbPath := ":memory:"

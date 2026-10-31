@@ -190,6 +190,27 @@
   .preview img { width: 40px; height: 40px; border-radius: 50%; object-fit: cover; background: var(--surface-2); }
 
   img.broken { visibility: hidden; }
+  button.cover { display: block; width: 100%; border: 0; padding: 0; cursor: pointer; color: inherit; font: inherit; }
+  .cover .play { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+                 background: rgba(15, 23, 42, .35); opacity: 0; transition: opacity .15s; }
+  .cover .play svg.i { width: 44px; height: 44px; color: #fff; fill: rgba(255, 255, 255, .9); stroke: none; }
+  button.cover:hover .play, button.cover:focus-visible .play { opacity: 1; }
+  @media (pointer: coarse) { .cover .play { opacity: .85; background: transparent; } .cover .play svg.i { width: 36px; height: 36px; } }
+  dialog#player { width: min(1080px, calc(100% - 32px)); max-height: calc(100% - 32px); padding: 0; border: 1px solid var(--border);
+                  border-radius: 12px; background: var(--surface); color: var(--text); overflow: hidden; }
+  dialog#player::backdrop { background: rgba(2, 6, 23, .7); }
+  .pl-head { display: flex; align-items: center; gap: var(--s3); padding: var(--s3) var(--s4); border-bottom: 1px solid var(--border); }
+  .pl-head img { width: 36px; height: 36px; border-radius: 50%; object-fit: cover; background: var(--surface-2); flex: none; }
+  .pl-head .txt { flex: 1; min-width: 0; }
+  .pl-head .t { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .pl-head .s { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .pl-video { position: relative; background: #000; aspect-ratio: 16 / 9; max-height: calc(100vh - 180px); width: 100%; }
+  .pl-video video { width: 100%; height: 100%; display: block; background: #000; }
+  .pl-msg { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; text-align: center;
+            padding: var(--s5); color: #e5e7eb; background: rgba(0, 0, 0, .6); font-size: 14px; }
+  .pl-msg[hidden] { display: none; }
+  .pl-foot { display: flex; align-items: center; gap: var(--s2); flex-wrap: wrap; padding: var(--s3) var(--s4); }
+  .pl-foot .info { color: var(--muted); font-size: 12px; margin-right: auto; }
   #toast { position: fixed; right: var(--s5); bottom: var(--s5); z-index: 50; background: var(--text); color: var(--bg);
            padding: 10px var(--s4); border-radius: var(--radius); font-size: 13px; opacity: 0; transform: translateY(8px);
            transition: opacity .2s, transform .2s; pointer-events: none; max-width: min(420px, calc(100% - 32px)); }
@@ -230,6 +251,8 @@
   <symbol id="i-back" viewBox="0 0 24 24"><path d="m15 18-6-6 6-6"/></symbol>
   <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
   <symbol id="i-key" viewBox="0 0 24 24"><circle cx="7.5" cy="15.5" r="5.5"/><path d="m21 2-9.6 9.6M15.5 7.5l3 3L22 7l-3-3"/></symbol>
+  <symbol id="i-play" viewBox="0 0 24 24"><path d="M8 5.14v13.72a1 1 0 0 0 1.52.85l10.6-6.86a1 1 0 0 0 0-1.7L9.52 4.29A1 1 0 0 0 8 5.14z"/></symbol>
+  <symbol id="i-x" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></symbol>
   <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M3 12a9 9 0 0 1 15-6.7L21 8M21 3v5h-5M21 12a9 9 0 0 1-15 6.7L3 16M3 21v-5h5"/></symbol>
 </svg>
 
@@ -270,6 +293,15 @@
     <main class="content" id="view"></main>
   </div>
 </div>
+<dialog id="player" aria-labelledby="plTitle">
+  <div class="pl-head">
+    <img id="plAvatar" alt="">
+    <div class="txt"><div class="t" id="plTitle"></div><div class="s" id="plSub"></div></div>
+    <button class="btn icon" id="plClose" aria-label="关闭播放器"><svg class="i"><use href="#i-x"/></svg></button>
+  </div>
+  <div class="pl-video"><video id="plVideo" controls playsinline></video><div class="pl-msg" id="plMsg" hidden></div></div>
+  <div class="pl-foot" id="plFoot"></div>
+</dialog>
 <div id="toast" role="status" aria-live="polite"></div>
 
 <script>
@@ -379,8 +411,9 @@ function roomCard(platform, r) {
   setStar(star, state.favs.has(platform + "/" + r.room_id));
   star.addEventListener("click", () => toggleFav(star, platform, r));
   return el("article", { class: "room" },
-    el("div", { class: "cover" },
+    el("button", { class: "cover", "aria-label": "观看 " + (r.user_name || r.room_id), onclick: () => openPlayer({ platform, room: r }) },
       r.cover ? el("img", { src: r.cover, loading: "lazy", alt: "", referrerpolicy: "no-referrer" }) : null,
+      el("span", { class: "play" }, icon("play")),
       r.online ? el("span", { class: "tag online" }, icon("flame"), fmtNum(r.online)) : null,
       r.live === false ? el("span", { class: "tag off" }, "未开播") : null),
     el("div", { class: "meta" },
@@ -550,6 +583,8 @@ async function viewChannels(v) {
         el("td", { class: "addr mono", title: addr(c) }, addr(c)),
         el("td", { class: "mono", style: "color:var(--muted);white-space:nowrap" }, fmtTime(c.created_at)),
         el("td", { class: "ops" },
+          el("button", { class: "btn icon sm", "aria-label": "观看 " + c.name, title: "观看", onclick: () => openPlayer({ channel: c }) }, icon("play", "width:15px;height:15px")),
+          " ",
           el("button", { class: "btn icon sm", "aria-label": "复制播放地址", title: "复制播放地址", onclick: () => copy(playURL(c)) }, icon("copy", "width:15px;height:15px")),
           " ",
           el("button", { class: "btn icon sm danger", "aria-label": "删除 " + c.name, title: "删除", onclick: () => del([c]) }, icon("trash", "width:15px;height:15px"))));
@@ -706,6 +741,133 @@ function viewImport(v) {
         preview))));
 }
 
+// ---------- 播放 ----------
+// 播放库体积大（mpegts.js 270KB、hls.js 600KB），第一次打开播放器时才加载。
+const libs = {};
+function loadLib(src) {
+  return libs[src] ||= new Promise((ok, fail) => {
+    const s = el("script", { src });
+    s.onload = ok;
+    s.onerror = () => { delete libs[src]; fail(new Error("加载播放库失败：" + src)); };
+    document.head.append(s);
+  });
+}
+let engine = null; // 当前的 mpegts/hls 实例，切换线路或关闭时销毁
+let stallTimer = 0;
+function stopEngine() {
+  const v = $("#plVideo");
+  clearTimeout(stallTimer);
+  if (engine) { try { engine.destroy(); } catch (_) {} engine = null; }
+  v.pause(); v.removeAttribute("src"); v.load();
+}
+function showMsg(text) { const m = $("#plMsg"); m.textContent = text || ""; m.hidden = !text; }
+
+// 浏览器解码能力有限：MP2 音频、部分 HEVC 播不了，此时给出明确提示而不是一直黑屏转圈。
+const codecHint = "浏览器可能不支持这个频道的音视频编码（常见于组播的 MP2 音频或 HEVC 画面），电视上的播放器通常可以正常播放。";
+
+async function playURL(kind, url) {
+  stopEngine();
+  showMsg("连接中…");
+  const v = $("#plVideo");
+  // 慢源或失效源有时既不报错也不出画面，不给结论会让人一直等。
+  stallTimer = setTimeout(() => {
+    if (v.currentTime === 0 && /连接中/.test($("#plMsg").textContent))
+      showMsg("20 秒内没有收到画面：源可能很慢、需要境外网络或已失效。可以稍后重试，或在电视上观看。");
+  }, 20000);
+  const abs = new URL(url, location.origin).href;
+  try {
+    if (kind === "hls") {
+      await loadLib("/static/hls.min.js");
+      if (window.Hls && Hls.isSupported()) {
+        const h = engine = new Hls({ liveDurationInfinity: true });
+        h.on(Hls.Events.ERROR, (_, d) => { if (d.fatal) showMsg("播放失败：" + (d.details || d.type) + "。" + (d.type === "mediaError" ? codecHint : "源可能已失效。")); });
+        h.on(Hls.Events.MANIFEST_PARSED, () => v.play().catch(() => {}));
+        h.loadSource(abs); h.attachMedia(v);
+      } else if (v.canPlayType("application/vnd.apple.mpegurl")) {
+        v.src = abs; await v.play().catch(() => {});
+      } else throw new Error("当前浏览器不支持 HLS 播放");
+    } else {
+      await loadLib("/static/mpegts.js");
+      if (!window.mpegts || !mpegts.isSupported()) throw new Error("当前浏览器不支持 MSE，无法播放");
+      const p = engine = mpegts.createPlayer({ type: kind, isLive: true, url: abs },
+        { enableWorker: false, lazyLoad: false, liveBufferLatencyChasing: true, autoCleanupSourceBuffer: true });
+      p.on(mpegts.Events.ERROR, (type, detail, info) => {
+        const media = type === mpegts.ErrorTypes.MEDIA_ERROR;
+        showMsg("播放失败：" + (detail || type) + (info && info.msg ? "（" + info.msg + "）" : "") + "。" + (media ? codecHint : "主播可能已下播，或线路不可用，换条线路试试。"));
+      });
+      p.on(mpegts.Events.MEDIA_INFO, mi => {
+        if (mi && mi.hasAudio === false && kind === "mpegts") toast("这个频道没有可播放的音轨（浏览器不支持其音频编码）", true);
+      });
+      p.attachMediaElement(v); p.load();
+      await p.play();
+    }
+  } catch (e) {
+    if (e && e.name === "NotAllowedError") { showMsg("点击画面开始播放"); return; }
+    if (e && e.message) showMsg(e.message);
+  }
+}
+
+async function openPlayer({ platform, room, channel }) {
+  const dlg = $("#player"), foot = $("#plFoot");
+  if (channel && channel.platform) { platform = channel.platform; room = { room_id: channel.room_id, user_name: channel.name, avatar: channel.logo }; }
+  const title = room ? (room.user_name || room.room_id) : channel.name;
+  $("#plTitle").textContent = title;
+  $("#plSub").textContent = room ? `${siteName(platform)} · ${room.room_id}${room.title ? " · " + room.title : ""}` : `${channel.group || "未分组"} · ${channel.url}`;
+  const av = $("#plAvatar"); av.classList.remove("broken");
+  const pic = room ? room.avatar : channel.logo;
+  av.hidden = !pic; if (pic) av.src = pic;
+  foot.replaceChildren();
+  showMsg("");
+  if (!dlg.open) dlg.showModal();
+  $("#plClose").focus();
+
+  const copyBtn = (u) => el("button", { class: "btn sm", onclick: () => copy(u) }, icon("copy", "width:14px;height:14px"), "复制地址");
+  if (room) {
+    const star = el("button", { class: "btn sm star" }, icon("star", "width:14px;height:14px"), "收藏");
+    setStar(star, state.favs.has(platform + "/" + room.room_id));
+    star.addEventListener("click", () => toggleFav(star, platform, room));
+    const info = el("span", { class: "info" }, "获取线路…");
+    const sel = el("select", { "aria-label": "线路", disabled: true });
+    foot.append(info, sel, star, copyBtn(streamURL(platform, room.room_id)));
+    showMsg("获取线路…");
+    let lines;
+    try {
+      const r = await fetch(`/${platform}/${encodeURIComponent(room.room_id)}?format=json`);
+      if (!r.ok) throw new Error((await r.text()).trim() || "HTTP " + r.status);
+      lines = (await r.json()).streams || [];
+    } catch (e) { info.textContent = ""; showMsg("无法播放：" + e.message); return; }
+    // 浏览器里统一走中转播 FLV：同源无跨域，断线由服务端续接。没有 FLV 的才退回 HLS 直连。
+    const flv = [], seen = new Set();
+    for (const s of lines) if (s.format === "flv" && !seen.has(s.cdn)) { seen.add(s.cdn); flv.push(s); }
+    const base = `/${platform}/${encodeURIComponent(room.room_id)}`;
+    // 第一项"自动"不指定线路，由服务端每次取流时挑最佳。B站每次取流分到的 CDN 节点名都不同
+    // （cn-sccd-ct-02-13 下一次就成了 -06），按名字指定必然 404，所以 B站只给"自动"。
+    const pinned = platform === "bilibili" ? [] : flv.map(s => ({ label: `${s.cdn} · ${s.quality}`, kind: "flv", url: `${base}?relay=1&cdn=${encodeURIComponent(s.cdn)}` }));
+    const opts = flv.length ? [{ label: `自动 · ${flv[0].quality}`, kind: "flv", url: `${base}?relay=1` }, ...pinned]
+                            : lines.filter(s => s.format === "m3u8").map(s => ({ label: `${s.cdn} · ${s.quality}（HLS）`, kind: "hls", url: s.url }));
+    if (!opts.length) { showMsg("没有浏览器能播放的线路"); return; }
+    sel.replaceChildren(...opts.map((o, i) => el("option", { value: String(i) }, o.label)));
+    sel.disabled = opts.length < 2;
+    sel.onchange = () => playURL(opts[+sel.value].kind, opts[+sel.value].url);
+    info.textContent = `${opts.length} 条线路` + (flv.length ? " · 经本机中转" : "");
+    playURL(opts[0].kind, opts[0].url);
+    return;
+  }
+
+  const info = el("span", { class: "info" }, "识别格式…");
+  foot.append(info, copyBtn(channel.url));
+  showMsg("识别格式…");
+  try {
+    const p = await api(`/api/channels/${channel.id}/probe`);
+    info.textContent = { hls: "HLS", flv: "FLV", mpegts: "MPEG-TS" }[p.kind] + " · 经本机代理";
+    playURL(p.kind, p.url);
+  } catch (e) {
+    info.textContent = "";
+    showMsg("无法播放：" + e.message);
+  }
+}
+function closePlayer() { stopEngine(); showMsg(""); const d = $("#player"); if (d.open) d.close(); }
+
 // ---------- 渲染 ----------
 function setCrumbs(items) {
   $("#crumbs").replaceChildren(...items.flatMap((it, i) => {
@@ -738,6 +900,12 @@ async function init() {
   $("#plUrl").textContent = playlistURL;
   $("#plCopy").addEventListener("click", () => copy(playlistURL));
   $("#menuBtn").addEventListener("click", () => document.body.classList.add("nav-open"));
+  $("#plClose").addEventListener("click", closePlayer);
+  // Esc 关闭、点遮罩关闭时也要停流：不停的话中转和组播连接会在后台一直占着。
+  $("#player").addEventListener("close", () => stopEngine());
+  // 真正出画面时才撤掉"连接中"；出错提示由播放库的错误回调覆盖上去。
+  $("#plVideo").addEventListener("playing", () => showMsg(""));
+  $("#player").addEventListener("click", e => { if (e.target === e.currentTarget) closePlayer(); });
   $("#scrim").addEventListener("click", () => document.body.classList.remove("nav-open"));
   try { state.sites = await api("/api/sites"); }
   catch (e) { $("#view").replaceChildren(el("div", { class: "state" }, "加载平台失败：" + e.message)); return; }

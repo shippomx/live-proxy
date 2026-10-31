@@ -23,6 +23,7 @@ func newBrowseServer(t *testing.T) *httptest.Server {
 	mux := http.NewServeMux()
 	registerLoginRoutes(mux)
 	registerBrowseRoutes(mux)
+	registerWatchRoutes(mux)
 	mux.HandleFunc("/", handleStream)
 	srv := httptest.NewServer(withTracing(mux))
 	t.Cleanup(func() { srv.Close(); s.Close() })
