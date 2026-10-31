@@ -242,3 +242,21 @@ func TestCrossSiteWritesRejected(t *testing.T) {
 		t.Fatalf("跨站 GET 不应被拦: %d", resp.StatusCode)
 	}
 }
+
+// TestRootRedirectsToBrowse 根路径默认进浏览页；
+// 只有精确的 "/" 被接管，/{平台}/{房间号} 仍归取流。
+func TestRootRedirectsToBrowse(t *testing.T) {
+	srv := newBrowseServer(t)
+	c := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	resp, err := c.Get(srv.URL + "/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusFound || resp.Header.Get("Location") != "/browse" {
+		t.Fatalf("/ 应 302 到 /browse，实际 %d %q", resp.StatusCode, resp.Header.Get("Location"))
+	}
+	if code, body := do(t, "GET", srv.URL+"/nosuch/1", "", nil); code != 404 || strings.HasPrefix(body, "{") {
+		t.Fatalf("取流路由被根路径挡住了: %d %s", code, body)
+	}
+}

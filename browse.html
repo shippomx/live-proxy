@@ -247,6 +247,10 @@
   .pl-msg[hidden] { display: none; }
   .pl-foot { display: flex; align-items: center; gap: var(--s2); flex-wrap: wrap; padding: var(--s3) var(--s4); }
   .pl-foot .info { color: var(--muted); font-size: 12px; margin-right: auto; }
+  .pl-routes { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: var(--s2) var(--s3);
+               padding: 0 var(--s4) var(--s3); font-size: 12px; }
+  .pl-routes .label { color: var(--subtle); white-space: nowrap; }
+  .pl-routes code { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   #toast { position: fixed; right: var(--s5); bottom: var(--s5); z-index: 50; background: var(--text); color: var(--bg);
            padding: 10px var(--s4); border-radius: var(--radius); font-size: 13px; opacity: 0; transform: translateY(8px);
            transition: opacity .2s, transform .2s; pointer-events: none; max-width: min(420px, calc(100% - 32px)); }
@@ -339,6 +343,7 @@
   </div>
   <div class="pl-video"><video id="plVideo" controls playsinline></video><div class="pl-msg" id="plMsg" hidden></div></div>
   <div class="pl-foot" id="plFoot"></div>
+  <div class="pl-routes" id="plRoutes"></div>
 </dialog>
 <div id="toast" role="status" aria-live="polite"></div>
 
@@ -947,6 +952,9 @@ async function playURL(kind, url, isRetry = false) {
 
 async function openPlayer({ platform, room, channel }) {
   const dlg = $("#player"), foot = $("#plFoot");
+  // 与 /playlist.m3u 里写的地址一致：平台频道带上导入时的查询串，其他频道就是原始地址。
+  const chURL = channel ? (channel.platform ? streamURL(channel.platform, channel.room_id) + (channel.query ? "?" + channel.query : "") : channel.url)
+                        : streamURL(platform, room.room_id);
   if (channel && channel.platform) { platform = channel.platform; room = { room_id: channel.room_id, user_name: channel.name, avatar: channel.logo }; }
   const title = room ? (room.user_name || room.room_id) : channel.name;
   $("#plTitle").textContent = title;
@@ -959,14 +967,19 @@ async function openPlayer({ platform, room, channel }) {
   if (!dlg.open) dlg.showModal();
   $("#plClose").focus();
 
-  const copyBtn = (u) => el("button", { class: "btn sm", onclick: () => copy(u) }, icon("copy", "width:14px;height:14px"), "复制地址");
+  // 播放器里直接列出这个频道在播放列表里的地址和播放列表本身的地址，抄到电视上不用再回顶栏找。
+  const route = (label, u) => [el("span", { class: "label" }, label), el("code", { class: "mono", title: u }, u),
+    el("button", { class: "btn sm", onclick: () => copy(u) }, icon("copy", "width:14px;height:14px"), "复制")];
+  $("#plRoutes").replaceChildren(
+    ...route("频道地址", chURL),
+    ...route("播放列表", playlistURL));
   if (room) {
     const star = el("button", { class: "btn sm star" }, icon("star", "width:14px;height:14px"), "收藏");
     setStar(star, state.favs.has(platform + "/" + room.room_id));
     star.addEventListener("click", () => toggleFav(star, platform, room));
     const info = el("span", { class: "info" }, "获取线路…");
     const sel = el("select", { "aria-label": "线路", disabled: true });
-    foot.append(info, sel, star, copyBtn(streamURL(platform, room.room_id)));
+    foot.append(info, sel, star);
     showMsg("获取线路…");
     let lines;
     try {
@@ -993,7 +1006,7 @@ async function openPlayer({ platform, room, channel }) {
   }
 
   const info = el("span", { class: "info" }, "识别格式…");
-  foot.append(info, copyBtn(channel.url));
+  foot.append(info);
   showMsg("识别格式…");
   try {
     const p = await api(`/api/channels/${channel.id}/probe`);

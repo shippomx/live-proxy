@@ -81,6 +81,10 @@ func categories(ctx context.Context, b sites.Browser) ([]sites.Category, error) 
 }
 
 func registerBrowseRoutes(mux *http.ServeMux) {
+	// 根路径默认进浏览页。{$} 只匹配精确的 "/"，/{平台}/{房间号} 仍落到取流的兜底路由。
+	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/browse", http.StatusFound)
+	})
 	mux.HandleFunc("GET /browse", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.Header().Set("Cache-Control", "no-store")

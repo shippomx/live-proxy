@@ -16,6 +16,7 @@ GET /{平台}/{房间号}?cdn=TX       → 指定线路
 GET /{平台}/{房间号}?relay=1      → FLV 中转：由本服务拉流，上游断开自动续接（见下）
 GET /healthz                      → 健康检查
 GET /login                        → 扫码登录页（B站、斗鱼）
+GET /                             → 302 到 /browse（默认进浏览页）
 GET /browse                       → 浏览直播间、收藏、导入 m3u（见下）
 GET /playlist.m3u                 → 收藏 + 导入的频道合并成一个播放列表
 ```
