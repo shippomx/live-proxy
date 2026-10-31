@@ -56,3 +56,10 @@ func TestDouyuWeixinQRLive(t *testing.T) {
 	}
 	t.Logf("✅ 微信二维码 %d 字节，长轮询正常", len(code.Image))
 }
+
+// TestDouyuDefaultMethodWeixin 斗鱼默认（页面主按钮）用微信扫码。
+func TestDouyuDefaultMethodWeixin(t *testing.T) {
+	if m := (&Douyu{}).QRMethods(); len(m) == 0 || m[0].ID != "weixin" {
+		t.Fatalf("斗鱼第一个扫码方式应为微信，实际 %v", m)
+	}
+}

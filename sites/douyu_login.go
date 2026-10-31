@@ -136,32 +136,66 @@ func (d *Douyu) Account(ctx context.Context, cookie string) (Account, error) {
 	if cookie == "" {
 		return Account{}, nil
 	}
-	body, err := Get(ctx, "https://www.douyu.com/member/cp/getUserInfo", map[string]string{
-		"Cookie": cookie, "Referer": "https://www.douyu.com/", "X-Requested-With": "XMLHttpRequest",
-	})
-	if err != nil {
-		return Account{}, err
-	}
-	var r struct {
-		Error int             `json:"error"`
-		Data  json.RawMessage `json:"data"`
-	}
-	if err := json.Unmarshal(body, &r); err != nil {
-		return Account{}, fmt.Errorf("%w: douyu getUserInfo: %v", ErrParse, err)
-	}
-	// -99 = 请先登录，即 Cookie 已失效。
-	if r.Error != 0 {
-		return Account{}, nil
-	}
-	// 登录态下的返回结构未经固定样本确认，昵称按常见字段名宽松提取，取不到不影响"已登录"判断。
-	var data map[string]any
-	_ = json.Unmarshal(r.Data, &data)
-	name := "已登录"
-	for _, k := range []string{"nickname", "nn", "username"} {
-		if v, ok := data[k].(string); ok && v != "" {
-			name = v
-			break
+	hdr := map[string]string{"Cookie": cookie, "Referer": "https://www.douyu.com/", "X-Requested-With": "XMLHttpRequest"}
+	var detail []string
+
+	// 两个接口都只核实过"未登录时"的返回（-99 请先登录 / error=1 且 uid=0），
+	// 登录态下的返回结构没有固定样本，所以任一接口 error=0 即认为已登录。
+	for _, api := range []string{"https://www.douyu.com/member/cp/getUserInfo", "https://www.douyu.com/lapi/member/api/getInfo"} {
+		body, err := Get(ctx, api, hdr)
+		if err != nil {
+			detail = append(detail, fmt.Sprintf("%s 请求失败: %v", api, err))
+			continue
+		}
+		detail = append(detail, fmt.Sprintf("%s → %.200s", api, body))
+		var r struct {
+			Error int             `json:"error"`
+			Data  json.RawMessage `json:"data"`
+		}
+		if json.Unmarshal(body, &r) == nil && r.Error == 0 {
+			return Account{LoggedIn: true, Name: douyuNickname(r.Data, cookie), Detail: strings.Join(detail, " | ")}, nil
 		}
 	}
-	return Account{LoggedIn: true, Name: name}, nil
+
+	// 接口都没确认时，退而看 Cookie 本身：斗鱼登录后一定种下鉴权 Cookie 和非零 uid。
+	// 校验接口判断错了就把一次成功的登录挡回去，比"把已过期的登录显示成已登录"更糟——
+	// 后者在取流画质上一眼可见（原画 vs 高清），前者让人根本登不上。
+	detail = append(detail, fmt.Sprintf("cookie 名: %v", CookieNames(cookie)))
+	if douyuCookieLooksLoggedIn(cookie) {
+		return Account{LoggedIn: true, Name: douyuNickname(nil, cookie), Note: "接口未确认，以取流画质为准",
+			Detail: strings.Join(detail, " | ")}, nil
+	}
+	return Account{Detail: strings.Join(detail, " | ")}, nil
+}
+
+// douyuCookieLooksLoggedIn 斗鱼登录后一定种下鉴权 Cookie（acf_auth/dy_auth）和非零 acf_uid。
+func douyuCookieLooksLoggedIn(cookie string) bool {
+	m := cookieMap(cookie)
+	return (m["acf_auth"] != "" || m["dy_auth"] != "") && m["acf_uid"] != "" && m["acf_uid"] != "0"
+}
+
+// douyuNickname 优先取接口返回里的昵称，其次取登录时种下的 acf_nickname Cookie。
+func douyuNickname(data json.RawMessage, cookie string) string {
+	var m map[string]any
+	_ = json.Unmarshal(data, &m)
+	for _, k := range []string{"nickname", "nn", "username"} {
+		if v, ok := m[k].(string); ok && v != "" {
+			return v
+		}
+	}
+	if info, ok := m["info"].(map[string]any); ok {
+		if v, ok := info["nickname"].(string); ok && v != "" {
+			return v
+		}
+	}
+	c := cookieMap(cookie)
+	for _, k := range []string{"acf_nickname", "acf_username"} {
+		if v, err := url.QueryUnescape(c[k]); err == nil && v != "" {
+			return v
+		}
+	}
+	if uid := c["acf_uid"]; uid != "" {
+		return "uid " + uid
+	}
+	return "已登录"
 }

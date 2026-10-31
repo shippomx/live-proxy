@@ -30,6 +30,7 @@
   .qr { display: none; text-align: center; margin: 8px 0 12px; }
   .qr img { width: 220px; height: 220px; background: #fff; padding: 8px; border-radius: 8px; }
   .state { text-align: center; font-size: 14px; color: var(--muted); margin-top: 6px; }
+  .qr .refresh { margin-top: 8px; font-size: 13px; padding: 4px 12px; }
   .state.ok { color: var(--ok); } .state.warn { color: var(--warn); } .state.err { color: var(--err); }
   .row { display: flex; gap: 8px; flex-wrap: wrap; }
   button { font: inherit; padding: 8px 16px; border-radius: 8px; border: 1px solid var(--line);
@@ -58,6 +59,7 @@ const $ = (s, el = document) => el.querySelector(s);
 // 每个平台当前进行中的登录会话号。轮询是"上一次返回再发下一次"（微信是 15~30 秒的长轮询，
 // 定时器并发发请求会堆积），换码或退出时递增会话号，让旧的轮询循环自行结束。
 const session = {};
+const lastMethod = {}; // 每个平台上一次使用的扫码方式，供"刷新二维码"沿用
 
 async function api(method, url) {
   const r = await fetch(url, { method });
@@ -74,7 +76,8 @@ function card(p) {
   el.innerHTML = `
     <h2><span class="name"></span><span class="badge"></span></h2>
     <p class="user"></p>
-    <div class="qr"><img alt="登录二维码"><div class="state"></div></div>
+    <div class="qr"><img alt="登录二维码"><div class="state"></div>
+      <button class="refresh">刷新二维码</button></div>
     <div class="row"><span class="methods"></span><button class="logout">退出登录</button></div>`;
   $(".name", el).textContent = p.name;
   const box = $(".methods", el);
@@ -83,10 +86,16 @@ function card(p) {
     const b = document.createElement("button");
     b.className = "login" + (i === 0 ? " primary" : "");
     b.textContent = m.name;
-    b.onclick = () => startLogin(p.id, m.id, b);
+    b.onclick = () => {
+      // 点了哪种方式，哪个按钮就切成主色，一眼看出当前二维码是给哪个 App 扫的。
+      box.querySelectorAll(".login").forEach(x => x.classList.toggle("primary", x === b));
+      startLogin(p.id, m.id, b);
+    };
     box.appendChild(b);
   });
   $(".logout", el).onclick = () => logout(p.id);
+  // 按上一次的扫码方式重新生成；二维码过期、扫错或想换一张时用。
+  $(".refresh", el).onclick = e => startLogin(p.id, lastMethod[p.id] || "", e.target);
   render(el, p);
   return el;
 }
@@ -127,6 +136,7 @@ async function load() {
 
 async function startLogin(id, method, btn) {
   const sid = session[id] = (session[id] || 0) + 1;
+  lastMethod[id] = method;
   const el = $("#p-" + id), qr = $(".qr", el);
   btn.disabled = true;
   qr.style.display = "block";
@@ -163,8 +173,8 @@ async function poll(id, key, sid) {
     switch (r.state) {
       case "waiting": break;
       case "scanned": setState(id, "已扫码，请在手机上确认", "warn"); break;
-      case "expired": return setState(id, "二维码已过期，请重新生成", "err");
-      case "cancel":  return setState(id, "已在手机上取消，请重新生成", "err");
+      case "expired": return setState(id, "二维码已过期，请点“刷新二维码”", "err");
+      case "cancel":  return setState(id, "已在手机上取消，请点“刷新二维码”", "err");
       case "done":
         setState(id, "登录成功：" + r.user, "ok");
         setTimeout(() => { $(".qr", $("#p-" + id)).style.display = "none"; load(); }, 1500);

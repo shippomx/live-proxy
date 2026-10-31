@@ -174,3 +174,26 @@ func TestDouyuUpgradeRates(t *testing.T) {
 		t.Fatalf("已是原画时不应再升档，实际 %v", r)
 	}
 }
+
+// TestDouyuCookieFallback 校验接口确认不了时以 Cookie 判断登录：
+// 必须同时有鉴权 Cookie 和非零 uid，匿名 Cookie（uid=0、无 auth）不能被当成已登录。
+func TestDouyuCookieFallback(t *testing.T) {
+	cases := map[string]bool{
+		"acf_auth=abc; acf_uid=123; acf_nickname=%E5%B0%8F%E9%B1%BC": true,
+		"dy_auth=abc; acf_uid=123":                                   true,
+		"acf_auth=abc; acf_uid=0":                                    false,
+		"acf_uid=123; dy_did=x":                                      false,
+		"acf_devid=x":                                                false,
+	}
+	for c, want := range cases {
+		if got := douyuCookieLooksLoggedIn(c); got != want {
+			t.Errorf("%q → %v，应为 %v", c, got, want)
+		}
+	}
+	if n := douyuNickname(nil, "acf_auth=a; acf_uid=1; acf_nickname=%E5%B0%8F%E9%B1%BC"); n != "小鱼" {
+		t.Errorf("昵称应从 acf_nickname 解码得到「小鱼」，实际 %q", n)
+	}
+	if n := douyuNickname([]byte(`{"info":{"nickname":"接口昵称"}}`), "acf_nickname=x"); n != "接口昵称" {
+		t.Errorf("应优先用接口返回的昵称，实际 %q", n)
+	}
+}
