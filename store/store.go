@@ -63,7 +63,9 @@ func Open(path string) (*Store, error) {
 	dsn := path
 	if path != ":memory:" {
 		// WAL：浏览页读列表时不会被导入的写事务挡住；busy_timeout 让偶发的锁冲突等一等而不是直接报错。
-		dsn = "file:" + path + "?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)"
+		// temp_store(MEMORY)：容器根文件系统只读、scratch 镜像里没有 /tmp，
+		// 排序或临时索引要落盘时会失败；数据量只有几百行，放内存足够。
+		dsn = "file:" + path + "?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)&_pragma=temp_store(MEMORY)"
 	}
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
