@@ -15,6 +15,7 @@ GET /{平台}/{房间号}?format=json  → 返回全部线路
 GET /{平台}/{房间号}?cdn=TX       → 指定线路
 GET /{平台}/{房间号}?relay=1      → FLV 中转：由本服务拉流，上游断开自动续接（见下）
 GET /healthz                      → 健康检查
+GET /login                        → 扫码登录页（B站、斗鱼）
 ```
 
 平台标识：`huya` `bilibili` `douyu` `kuaishou` `cc`
@@ -41,6 +42,23 @@ GET /healthz                      → 健康检查
 - 重新取流优先沿用原 CDN；20 秒内取不到、主播下播、或上游连续 3 次一连就断时结束响应，交给播放器自己重试。
 - 想让所有 FLV 默认走中转而不用改节目单：启动参数加 `-relay`（`?relay=0` 可单独关闭）。
 - 代价：流量经过路由器。单路 1–4 Mbps，R5S 转几路没有压力。
+
+## 扫码登录（高画质）
+
+浏览器打开 `http://<路由器IP>:9000/login`，用对应 App 扫码。登录后立即生效于取流，无需重启。
+
+| 平台 | 不登录 | 登录后 |
+|---|---|---|
+| B站 | 原画被静默降级到超清/高清 | 原画 |
+| 斗鱼 | 请求原画（`rate=0`）被静默降级成高清，最高只能拿到蓝光/超清 | 原画 |
+| 虎牙 | 本来就是原画（源流） | 不需要登录 |
+
+- 流程：B站参考 dart_simple_live（`passport.bilibili.com/x/passport-login/web/qrcode`），
+  斗鱼取自 passport.douyu.com 登录页的 `app-login-all.js`（`/scan/generateCode` → `/japi/scan/auth` → 访问回调地址种 Cookie）。
+- Cookie 存在 `-data` 目录（容器里是 `/opt/live-proxy/data`，0600），重启自动加载并校验是否失效。
+- 扫码后先校验能否真正登录，再替换正在使用的 Cookie：一次失败的扫码不会顶掉原本有效的登录。
+- 页面与接口都不回显 Cookie，但局域网内的设备都能打开该页、扫码或退出登录。
+- 斗鱼的 `rate=0` 是原画而不是"自动"——早先按"自动"跳过了它，于是登录后也拿不到原画。
 
 ## 状态码含义
 
@@ -87,6 +105,29 @@ HOST=r5s PORT=9000 ./deploy.sh
 目标机 overlay 分区不足 500MB，所以走单文件而非 Docker。
 
 服务由 procd 托管：崩溃自动重启、开机自启、优雅停止。
+
+### 容器方式（与 procd 方式二选一）
+
+```bash
+PORT=9001 ./deploy-docker.sh                     # 新端口并行试运行，不影响现有服务
+REPLACE_NATIVE=1 RELAY=true ./deploy-docker.sh   # 正式切换：停掉 procd 服务，容器接管 9000
+```
+
+本机交叉编译 → 上传到路由器 `/opt/live-proxy` → 在路由器上 `docker build`（`FROM scratch`，
+不拉任何基础镜像，国内拉 Docker Hub 不稳的问题不存在）→ `docker compose up -d`。
+
+- 用 host 网络：R5S 的 dockerd 配了 `"iptables": false`，bridge 网络出网不一定通，
+  且 docker-proxy 转发后日志里看不到真实的电视 IP。
+- 以 nobody 运行、只读根文件系统、去掉全部 capabilities。
+- 每次部署打时间戳 tag，旧镜像保留用于回滚。
+- 切回 procd：`docker compose -f /opt/live-proxy/docker-compose.yml down && /etc/init.d/live-proxy enable && /etc/init.d/live-proxy start`
+
+```bash
+ssh r5s docker logs -f live-proxy     # 看日志
+```
+
+> 早期这里写过"overlay 分区不足 500MB 所以不用 Docker"。2026-10-30 复查 R5S 的 overlay
+> 已有 60GB+ 可用，docker 数据目录在 `/opt/docker`，该约束已不成立。
 
 ```bash
 ssh r5s /etc/init.d/live-proxy {start|stop|restart}
