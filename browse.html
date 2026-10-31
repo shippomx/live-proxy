@@ -869,9 +869,15 @@ function loadLib(src) {
 }
 let engine = null; // 当前的 mpegts/hls 实例，切换线路或关闭时销毁
 let stallTimer = 0;
+// 直播流中途断开（浏览器报 network error，mpegts.js 记为 Early-EOF）时自动重连。
+// 直播没法断点续传，播放库自己不会重试，不处理的话看两分钟就可能停在报错上。
+const reconnect = { n: 0, timer: 0, okTimer: 0, token: 0 };
+const MAX_RECONNECT = 5;
 function stopEngine() {
   const v = $("#plVideo");
   clearTimeout(stallTimer);
+  clearTimeout(reconnect.timer);
+  clearTimeout(reconnect.okTimer);
   if (engine) { try { engine.destroy(); } catch (_) {} engine = null; }
   v.pause(); v.removeAttribute("src"); v.load();
 }
@@ -880,9 +886,21 @@ function showMsg(text) { const m = $("#plMsg"); m.textContent = text || ""; m.hi
 // 浏览器解码能力有限：MP2 音频、部分 HEVC 播不了，此时给出明确提示而不是一直黑屏转圈。
 const codecHint = "浏览器可能不支持这个频道的音视频编码（常见于组播的 MP2 音频或 HEVC 画面），电视上的播放器通常可以正常播放。";
 
-async function playURL(kind, url) {
+// 网络类错误时重连；连续失败 MAX_RECONNECT 次才放弃。返回 true 表示已安排重连。
+function scheduleReconnect(kind, url, token) {
+  if (token !== reconnect.token || reconnect.n >= MAX_RECONNECT || !$("#player").open) return false;
+  reconnect.n++;
+  const delay = Math.min(1000 * 2 ** (reconnect.n - 1), 8000);
+  showMsg(`连接中断，正在重连（第 ${reconnect.n} 次）…`);
+  reconnect.timer = setTimeout(() => { if (token === reconnect.token) playURL(kind, url, true); }, delay);
+  return true;
+}
+
+async function playURL(kind, url, isRetry = false) {
   stopEngine();
-  showMsg("连接中…");
+  if (!isRetry) reconnect.n = 0;
+  const token = ++reconnect.token;
+  showMsg(isRetry ? `正在重连（第 ${reconnect.n} 次）…` : "连接中…");
   const v = $("#plVideo");
   // 慢源或失效源有时既不报错也不出画面，不给结论会让人一直等。
   stallTimer = setTimeout(() => {
@@ -895,7 +913,11 @@ async function playURL(kind, url) {
       await loadLib("/static/hls.min.js");
       if (window.Hls && Hls.isSupported()) {
         const h = engine = new Hls({ liveDurationInfinity: true });
-        h.on(Hls.Events.ERROR, (_, d) => { if (d.fatal) showMsg("播放失败：" + (d.details || d.type) + "。" + (d.type === "mediaError" ? codecHint : "源可能已失效。")); });
+        h.on(Hls.Events.ERROR, (_, d) => {
+          if (!d.fatal) return;
+          if (d.type === "networkError" && scheduleReconnect(kind, url, token)) return;
+          showMsg("播放失败：" + (d.details || d.type) + "。" + (d.type === "mediaError" ? codecHint : "源可能已失效。"));
+        });
         h.on(Hls.Events.MANIFEST_PARSED, () => v.play().catch(() => {}));
         h.loadSource(abs); h.attachMedia(v);
       } else if (v.canPlayType("application/vnd.apple.mpegurl")) {
@@ -908,6 +930,7 @@ async function playURL(kind, url) {
         { enableWorker: false, lazyLoad: false, liveBufferLatencyChasing: true, autoCleanupSourceBuffer: true });
       p.on(mpegts.Events.ERROR, (type, detail, info) => {
         const media = type === mpegts.ErrorTypes.MEDIA_ERROR;
+        if (type === mpegts.ErrorTypes.NETWORK_ERROR && scheduleReconnect(kind, url, token)) return;
         showMsg("播放失败：" + (detail || type) + (info && info.msg ? "（" + info.msg + "）" : "") + "。" + (media ? codecHint : "主播可能已下播，或线路不可用，换条线路试试。"));
       });
       p.on(mpegts.Events.MEDIA_INFO, mi => {
@@ -1101,7 +1124,12 @@ async function init() {
   // Esc 关闭、点遮罩关闭时也要停流：不停的话中转和组播连接会在后台一直占着。
   $("#player").addEventListener("close", () => stopEngine());
   // 真正出画面时才撤掉"连接中"；出错提示由播放库的错误回调覆盖上去。
-  $("#plVideo").addEventListener("playing", () => showMsg(""));
+  $("#plVideo").addEventListener("playing", () => {
+    showMsg("");
+    // 稳定播放 30 秒后清零重连计数：长时间观看中偶尔断几次都能接上，连续失败才放弃。
+    clearTimeout(reconnect.okTimer);
+    reconnect.okTimer = setTimeout(() => { reconnect.n = 0; }, 30000);
+  });
   $("#player").addEventListener("click", e => { if (e.target === e.currentTarget) closePlayer(); });
   $("#scrim").addEventListener("click", () => document.body.classList.remove("nav-open"));
   try { state.sites = await api("/api/sites"); }
