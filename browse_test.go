@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"mime/multipart"
@@ -26,7 +27,7 @@ func newBrowseServer(t *testing.T) *httptest.Server {
 	registerWatchRoutes(mux)
 	registerEPGRoutes(mux)
 	mux.HandleFunc("/", handleStream)
-	srv := httptest.NewServer(withTracing(mux))
+	srv := httptest.NewServer(withTracing(sameOriginWrites(mux)))
 	t.Cleanup(func() { srv.Close(); s.Close() })
 	return srv
 }
@@ -202,4 +203,42 @@ func TestAddFavoriteByShortID(t *testing.T) {
 		t.Fatalf("短号与长号应是同一房间: %s", body)
 	}
 	t.Logf("短号 6 → %s (%s)", r.RoomID, r.Name)
+}
+
+func TestCrossSiteWritesRejected(t *testing.T) {
+	srv := newBrowseServer(t)
+	host := strings.TrimPrefix(srv.URL, "http://")
+	post := func(origin string) int {
+		req, _ := http.NewRequest("POST", srv.URL+"/api/import", strings.NewReader(importFile))
+		req.Header.Set("Content-Type", "text/plain")
+		if origin != "" {
+			req.Header.Set("Origin", origin)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		return resp.StatusCode
+	}
+	if code := post("http://evil.example"); code != 403 {
+		t.Fatalf("跨站 POST 应被拒绝，得到 %d", code)
+	}
+	if list, _ := db.List(context.Background()); len(list) != 0 {
+		t.Fatalf("被拒绝的请求不应写库: %d 条", len(list))
+	}
+	if code := post("http://" + host); code != 200 {
+		t.Fatalf("同源 POST 应放行，得到 %d", code)
+	}
+	if code := post(""); code != 200 { // curl 等不带 Origin
+		t.Fatalf("不带 Origin 的 POST 应放行，得到 %d", code)
+	}
+	// 读请求不受影响
+	req, _ := http.NewRequest("GET", srv.URL+"/playlist.m3u", nil)
+	req.Header.Set("Origin", "http://evil.example")
+	resp, _ := http.DefaultClient.Do(req)
+	resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("跨站 GET 不应被拦: %d", resp.StatusCode)
+	}
 }

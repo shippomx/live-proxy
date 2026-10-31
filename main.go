@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -87,7 +88,7 @@ func main() {
 
 	srv := &http.Server{
 		Addr:              *addr,
-		Handler:           withTracing(mux),
+		Handler:           withTracing(sameOriginWrites(mux)),
 		ReadHeaderTimeout: 10 * time.Second,
 		WriteTimeout:      40 * time.Second,
 		IdleTimeout:       120 * time.Second,
@@ -136,6 +137,28 @@ func withTracing(next http.Handler) http.Handler {
 		}()
 		w.Header().Set("X-Request-Id", reqID)
 		next.ServeHTTP(w, r.WithContext(ctx))
+	})
+}
+
+// sameOriginWrites 拒绝跨站发来的写请求（CSRF）。这些接口不做鉴权，只靠"在局域网里"，
+// 但局域网里的浏览器打开任何外部网页，那个网页都能让浏览器向本服务发 POST：
+// text/plain 的 POST 不触发预检，可以往电视的播放列表里塞频道、让服务去拉任意地址。
+// 浏览器的跨站请求一定带 Origin；本站页面的 Origin 与 Host 一致；curl 等不带 Origin，照常放行。
+func sameOriginWrites(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet, http.MethodHead, http.MethodOptions:
+		default:
+			if o := r.Header.Get("Origin"); o != "" {
+				u, err := url.Parse(o)
+				if err != nil || !strings.EqualFold(u.Host, r.Host) {
+					loggerFrom(r.Context()).Warn("拒绝跨站写请求", "origin", o, "method", r.Method)
+					writeErr(w, http.StatusForbidden, "拒绝跨站请求")
+					return
+				}
+			}
+		}
+		next.ServeHTTP(w, r)
 	})
 }
 
