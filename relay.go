@@ -67,7 +67,7 @@ func relay(ctx context.Context, w http.ResponseWriter, log *slog.Logger, site si
 	barren := 0 // 连续没写出任何数据的段数
 	for seg := 0; ; seg++ {
 		start, before := time.Now(), sp.written
-		err := pullOnce(ctx, target.URL, sp, func() {
+		err := pullOnce(ctx, target.URL, relayReferer[site.ID()], sp, func() {
 			// 只在第一段成功拿到上游响应后才写响应头：第一段就失败时
 			// 还能给播放器返回 502，而不是一个 200 加空 body。
 			if !responded {
@@ -143,9 +143,17 @@ func reresolve(ctx context.Context, site sites.Site, roomID, preferCDN string) (
 	}
 }
 
+// relayReferer 拉流时带的 Referer。B站部分直播间（如官方活动间）的 CDN 校验 Referer，
+// 不带直接 403；带上平台自己的站点地址与网页播放器的请求一致，对不校验的 CDN 也无害。
+var relayReferer = map[string]string{
+	"bilibili": "https://live.bilibili.com/",
+	"douyu":    "https://www.douyu.com/",
+	"huya":     "https://www.huya.com/",
+}
+
 // pullOnce 拉一段上游流交给 splicer，直到上游结束、出错或卡死。
-// onConnected 在拿到 200 响应后、写出第一个字节前调用。
-func pullOnce(ctx context.Context, url string, sp *flvSplicer, onConnected func()) error {
+// referer 为空时不带。onConnected 在拿到 200 响应后、写出第一个字节前调用。
+func pullOnce(ctx context.Context, url, referer string, sp *flvSplicer, onConnected func()) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
@@ -154,6 +162,9 @@ func pullOnce(ctx context.Context, url string, sp *flvSplicer, onConnected func(
 		return err
 	}
 	req.Header.Set("User-Agent", sites.UserAgent)
+	if referer != "" {
+		req.Header.Set("Referer", referer)
+	}
 	resp, err := relayClient.Do(req)
 	if err != nil {
 		return err

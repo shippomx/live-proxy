@@ -517,7 +517,7 @@ func TestLiveResumeNoReplay(t *testing.T) {
 					t.Fatalf("第 %d 次取流失败: %v", i+1, err)
 				}
 				pctx, cancel := context.WithTimeout(context.Background(), dur)
-				err = pullOnce(pctx, streams[0].URL, sp, func() {})
+				err = pullOnce(pctx, streams[0].URL, "", sp, func() {})
 				cancel()
 				if err != nil && pctx.Err() == nil {
 					t.Logf("第 %d 次拉流在主动断开前失败（CDN %s）: %v", i+1, streams[0].CDN, err)
