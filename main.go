@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"syscall"
@@ -26,6 +27,7 @@ import (
 	_ "time/tzdata"
 
 	"live-proxy/sites"
+	"live-proxy/store"
 )
 
 var registry = map[string]sites.Site{}
@@ -48,7 +50,7 @@ var relayDefault bool
 func main() {
 	addr := flag.String("addr", ":9000", "监听地址")
 	flag.BoolVar(&relayDefault, "relay", false, "FLV 线路默认走中转（上游断开自动续接），而不是 302 跳转")
-	flag.StringVar(&loginDir, "data", "", "扫码登录 Cookie 的保存目录；为空则登录只在本次运行期间有效")
+	flag.StringVar(&loginDir, "data", "", "数据目录：扫码登录 Cookie 与收藏/导入频道的数据库；为空则只在本次运行期间有效")
 	flag.Parse()
 
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
@@ -60,7 +62,25 @@ func main() {
 		json.NewEncoder(w).Encode(map[string]any{"ok": true, "platforms": platformIDs()})
 	})
 	registerLoginRoutes(mux)
+	registerBrowseRoutes(mux)
 	mux.HandleFunc("/", handleStream)
+
+	dbPath := ":memory:"
+	if loginDir != "" {
+		if err := os.MkdirAll(loginDir, 0o700); err != nil {
+			slog.Error("创建数据目录失败", "dir", loginDir, "err", err)
+			os.Exit(1)
+		}
+		dbPath = filepath.Join(loginDir, "live-proxy.db")
+	} else {
+		slog.Warn("未设置 -data，收藏与导入的频道只在内存中，重启后丢失")
+	}
+	var err error
+	if db, err = store.Open(dbPath); err != nil {
+		slog.Error("打开数据库失败", "path", dbPath, "err", err)
+		os.Exit(1)
+	}
+	defer db.Close()
 
 	srv := &http.Server{
 		Addr:              *addr,

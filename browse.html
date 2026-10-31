@@ -1,0 +1,435 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>直播浏览</title>
+<style>
+  :root {
+    --bg: #f5f6f8; --card: #ffffff; --text: #1d2129; --muted: #6b7280;
+    --line: #e5e7eb; --ok: #16a34a; --warn: #d97706; --err: #dc2626; --btn: #2563eb; --btn-text: #fff;
+    --star: #f59e0b; --chip: #eef2ff;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #111318; --card: #1b1e25; --text: #e6e8eb; --muted: #9aa1ac;
+      --line: #2c313a; --ok: #4ade80; --warn: #fbbf24; --err: #f87171; --btn: #3b82f6; --btn-text: #fff;
+      --star: #fbbf24; --chip: #23283a;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 15px/1.6 -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif; }
+  main { max-width: 1180px; margin: 0 auto; padding: 20px 16px 64px; }
+  header { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: baseline; justify-content: space-between; }
+  h1 { font-size: 22px; margin: 0; }
+  header a { color: var(--btn); font-size: 14px; text-decoration: none; }
+  .playlist { display: flex; gap: 8px; align-items: center; margin: 12px 0 16px; background: var(--card);
+              border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; }
+  .playlist span { color: var(--muted); font-size: 13px; white-space: nowrap; }
+  .playlist code { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
+  button { font: inherit; cursor: pointer; border-radius: 8px; border: 1px solid var(--line);
+           background: var(--card); color: var(--text); padding: 6px 12px; }
+  button.primary { background: var(--btn); color: var(--btn-text); border-color: var(--btn); }
+  button:disabled { opacity: .5; cursor: default; }
+  input, textarea { font: inherit; color: var(--text); background: var(--card); border: 1px solid var(--line);
+                    border-radius: 8px; padding: 6px 10px; }
+  .tabs { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 10px; }
+  .tabs button[aria-selected="true"] { background: var(--btn); color: var(--btn-text); border-color: var(--btn); }
+  .tabs.modes button { border-radius: 999px; padding: 4px 14px; font-size: 14px; }
+  .bar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin: 10px 0; }
+  .bar input { flex: 1; min-width: 160px; }
+  .crumb { color: var(--muted); font-size: 14px; }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; }
+  .chips button { background: var(--chip); border-color: transparent; font-size: 14px; padding: 3px 12px; }
+  .chips button[aria-selected="true"] { background: var(--btn); color: var(--btn-text); }
+  .subs { display: grid; gap: 8px; grid-template-columns: repeat(auto-fill, minmax(110px, 1fr)); }
+  .subs button { display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 8px 4px; font-size: 13px; }
+  .subs img { width: 48px; height: 48px; object-fit: cover; border-radius: 8px; background: var(--line); }
+  .grid { display: grid; gap: 12px; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); }
+  .room { background: var(--card); border: 1px solid var(--line); border-radius: 10px; overflow: hidden;
+          display: flex; flex-direction: column; }
+  .cover { position: relative; aspect-ratio: 16 / 9; background: var(--line); }
+  .cover img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .cover .online { position: absolute; right: 6px; bottom: 6px; background: rgba(0,0,0,.6); color: #fff;
+                   font-size: 12px; padding: 0 6px; border-radius: 4px; }
+  .cover .off { position: absolute; left: 6px; top: 6px; background: rgba(0,0,0,.6); color: #fff;
+                font-size: 12px; padding: 0 6px; border-radius: 4px; }
+  .meta { padding: 8px 10px 10px; display: flex; gap: 8px; align-items: flex-start; }
+  .meta .txt { flex: 1; min-width: 0; }
+  .title { font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .user { color: var(--muted); font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .acts { display: flex; gap: 2px; }
+  .icon { border: none; background: none; padding: 2px 4px; font-size: 18px; line-height: 1; color: var(--muted); }
+  .icon.star[aria-pressed="true"] { color: var(--star); }
+  .more { display: block; margin: 16px auto 0; }
+  .empty, .loading { color: var(--muted); text-align: center; padding: 32px 0; }
+  section.card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; margin-bottom: 14px; }
+  section.card h2 { font-size: 16px; margin: 0 0 8px; }
+  .hint { color: var(--muted); font-size: 13px; margin: 4px 0 0; }
+  textarea { width: 100%; min-height: 90px; font-family: ui-monospace, Menlo, monospace; font-size: 12px; }
+  .group h3 { font-size: 14px; margin: 14px 0 6px; color: var(--muted); }
+  .ch { display: flex; gap: 10px; align-items: center; padding: 6px 0; border-top: 1px solid var(--line); }
+  .ch img { width: 32px; height: 32px; object-fit: contain; border-radius: 6px; background: var(--line); flex: none; }
+  .ch .txt { flex: 1; min-width: 0; }
+  .ch .sub { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .badge { font-size: 11px; padding: 0 8px; border-radius: 999px; border: 1px solid currentColor; color: var(--muted); margin-left: 6px; }
+  .badge.fav { color: var(--star); }
+  #toast { position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%); background: var(--text); color: var(--bg);
+           padding: 8px 16px; border-radius: 8px; font-size: 14px; opacity: 0; transition: opacity .2s; pointer-events: none;
+           max-width: calc(100% - 32px); }
+  #toast.show { opacity: .92; }
+  #toast.err { background: var(--err); color: #fff; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>直播浏览</h1>
+    <a href="/login">扫码登录（高画质）→</a>
+  </header>
+  <div class="playlist">
+    <span>播放列表</span>
+    <code id="plUrl"></code>
+    <button id="plCopy">复制</button>
+  </div>
+
+  <nav class="tabs" id="sites" role="tablist" aria-label="平台"></nav>
+  <nav class="tabs modes" id="modes" role="tablist" aria-label="浏览方式">
+    <button role="tab" data-mode="recommend">推荐</button>
+    <button role="tab" data-mode="category">分区</button>
+    <button role="tab" data-mode="search">搜索</button>
+    <button role="tab" data-mode="mine">我的频道</button>
+  </nav>
+
+  <div id="view"></div>
+</main>
+<div id="toast" role="status" aria-live="polite"></div>
+
+<script>
+"use strict";
+const $ = (s, el = document) => el.querySelector(s);
+const state = { sites: [], site: null, mode: "recommend", favs: new Set(), cats: {}, catPath: null };
+const playlistURL = location.origin + "/playlist.m3u";
+
+function toast(msg, isErr) {
+  const t = $("#toast");
+  t.textContent = msg;
+  t.className = "show" + (isErr ? " err" : "");
+  clearTimeout(toast.timer);
+  toast.timer = setTimeout(() => (t.className = ""), isErr ? 4000 : 2000);
+}
+
+async function api(path, opts = {}) {
+  const res = await fetch(path, opts);
+  let data = null;
+  try { data = await res.json(); } catch (_) {}
+  if (!res.ok) throw new Error((data && data.error) || ("HTTP " + res.status));
+  return data;
+}
+
+function el(tag, attrs = {}, ...children) {
+  const e = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) {
+    if (k === "class") e.className = v;
+    else if (k.startsWith("on")) e.addEventListener(k.slice(2), v);
+    else if (v !== undefined && v !== null && v !== false) e.setAttribute(k, v === true ? "" : v);
+  }
+  for (const c of children.flat()) if (c != null) e.append(c);
+  return e;
+}
+
+function fmtOnline(n) {
+  if (!n) return "";
+  return n >= 10000 ? (n / 10000).toFixed(1).replace(/\.0$/, "") + "万" : String(n);
+}
+
+function streamURL(platform, roomID) { return location.origin + "/" + platform + "/" + encodeURIComponent(roomID); }
+
+async function copy(text) {
+  try { await navigator.clipboard.writeText(text); toast("已复制"); }
+  catch (_) { prompt("复制下面的地址", text); }
+}
+
+// ---------- 收藏 ----------
+async function loadFavs() {
+  try { state.favs = new Set(await api("/api/favorites")); } catch (e) { toast("读取收藏失败：" + e.message, true); }
+}
+
+async function toggleFav(btn, platform, room) {
+  const key = platform + "/" + room.room_id;
+  const on = state.favs.has(key);
+  btn.disabled = true;
+  try {
+    if (on) {
+      await api("/api/favorites/" + platform + "/" + encodeURIComponent(room.room_id), { method: "DELETE" });
+      state.favs.delete(key);
+      toast("已取消收藏");
+    } else {
+      // 主播名比直播标题稳定（标题天天变），用它作频道名。
+      const r = await api("/api/favorites/" + platform + "/" + encodeURIComponent(room.room_id), {
+        method: "PUT", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: room.user_name || room.title, logo: room.avatar || "" }),
+      });
+      state.favs.add(platform + "/" + r.room_id);
+      toast(r.added ? "已收藏：" + r.name : "已在频道列表里");
+    }
+    btn.setAttribute("aria-pressed", String(!on));
+    btn.textContent = on ? "☆" : "★";
+    btn.title = on ? "收藏" : "取消收藏";
+  } catch (e) {
+    toast("操作失败：" + e.message, true);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+// ---------- 房间列表 ----------
+function roomCard(platform, r) {
+  const fav = state.favs.has(platform + "/" + r.room_id);
+  const star = el("button", { class: "icon star", "aria-pressed": String(fav), title: fav ? "取消收藏" : "收藏" }, fav ? "★" : "☆");
+  star.addEventListener("click", () => toggleFav(star, platform, r));
+  return el("article", { class: "room" },
+    el("div", { class: "cover" },
+      r.cover ? el("img", { src: r.cover, loading: "lazy", alt: "", referrerpolicy: "no-referrer" }) : null,
+      r.online ? el("span", { class: "online" }, "🔥 " + fmtOnline(r.online)) : null,
+      r.live === false ? el("span", { class: "off" }, "未开播") : null),
+    el("div", { class: "meta" },
+      el("div", { class: "txt" },
+        el("div", { class: "title", title: r.title }, r.title || "（无标题）"),
+        el("div", { class: "user" }, r.user_name + " · " + r.room_id)),
+      el("div", { class: "acts" },
+        star,
+        el("button", { class: "icon", title: "复制播放地址", onclick: () => copy(streamURL(platform, r.room_id)) }, "⧉"))));
+}
+
+// pager 负责"加载更多"：fetchPage(page) 返回 {has_more, items}。
+function pager(container, platform, fetchPage) {
+  const grid = el("div", { class: "grid" });
+  const more = el("button", { class: "more" }, "加载更多");
+  const status = el("div", { class: "loading" }, "加载中…");
+  container.append(grid, status);
+  let page = 1;
+  const seen = new Set();
+  async function next() {
+    more.disabled = true;
+    try {
+      const data = await fetchPage(page);
+      // 列表在翻页期间会变动，同一房间可能出现在相邻两页，去重后再显示。
+      for (const r of data.items) {
+        if (seen.has(r.room_id)) continue;
+        seen.add(r.room_id);
+        grid.append(roomCard(platform, r));
+      }
+      status.remove();
+      if (!grid.children.length) container.append(el("div", { class: "empty" }, "没有直播间"));
+      if (data.has_more && data.items.length) { page++; container.append(more); } else more.remove();
+    } catch (e) {
+      status.textContent = "加载失败：" + e.message;
+      status.className = "empty";
+    } finally {
+      more.disabled = false;
+    }
+  }
+  more.addEventListener("click", next);
+  next();
+}
+
+// ---------- 各视图 ----------
+function viewRecommend(v) {
+  const p = state.site.id;
+  pager(v, p, page => api(`/api/sites/${p}/recommend?page=${page}`));
+}
+
+async function viewCategory(v) {
+  const p = state.site.id;
+  if (state.catPath && state.catPath.platform === p) return viewCategoryRooms(v, state.catPath.sub);
+  v.append(el("div", { class: "loading" }, "加载分区…"));
+  let cats = state.cats[p];
+  try {
+    if (!cats) cats = state.cats[p] = await api(`/api/sites/${p}/categories`);
+  } catch (e) {
+    v.replaceChildren(el("div", { class: "empty" }, "加载分区失败：" + e.message));
+    return;
+  }
+  v.replaceChildren();
+  const chips = el("div", { class: "chips", role: "tablist" });
+  const subs = el("div", { class: "subs" });
+  v.append(chips, subs);
+  const showTop = (c, btn) => {
+    for (const b of chips.children) b.setAttribute("aria-selected", "false");
+    btn.setAttribute("aria-selected", "true");
+    subs.replaceChildren(...(c.children || []).filter(s => s.id && s.id !== "0").map(s =>
+      el("button", { onclick: () => { state.catPath = { platform: p, sub: s }; render(); } },
+        s.pic ? el("img", { src: s.pic, loading: "lazy", alt: "", referrerpolicy: "no-referrer" }) : el("img", { alt: "" }),
+        s.name)));
+  };
+  cats.forEach((c, i) => {
+    const b = el("button", { role: "tab", "aria-selected": "false" }, c.name);
+    b.addEventListener("click", () => showTop(c, b));
+    chips.append(b);
+    if (i === 0) showTop(c, b);
+  });
+}
+
+function viewCategoryRooms(v, sub) {
+  const p = state.site.id;
+  v.append(el("div", { class: "bar" },
+    el("button", { onclick: () => { state.catPath = null; render(); } }, "← 全部分区"),
+    el("span", { class: "crumb" }, sub.name)));
+  const q = `id=${encodeURIComponent(sub.id)}&parent=${encodeURIComponent(sub.parent_id || "")}`;
+  pager(v, p, page => api(`/api/sites/${p}/rooms?${q}&page=${page}`));
+}
+
+function viewSearch(v) {
+  const p = state.site.id;
+  const input = el("input", { type: "search", placeholder: "搜索直播间或主播", value: state.lastKw || "" });
+  const results = el("div");
+  const go = () => {
+    const kw = input.value.trim();
+    if (!kw) return;
+    state.lastKw = kw;
+    results.replaceChildren();
+    pager(results, p, page => api(`/api/sites/${p}/search?kw=${encodeURIComponent(kw)}&page=${page}`));
+  };
+  input.addEventListener("keydown", e => { if (e.key === "Enter") go(); });
+  v.append(el("div", { class: "bar" }, input, el("button", { class: "primary", onclick: go }, "搜索")), results);
+  if (state.lastKw) go();
+  input.focus();
+}
+
+async function viewMine(v) {
+  // 按房间号添加
+  const sel = el("select", {}, ...state.sites.map(s => el("option", { value: s.id, selected: s.id === state.site.id }, s.name)));
+  for (const s of [sel]) Object.assign(s.style, { font: "inherit", padding: "6px", borderRadius: "8px", border: "1px solid var(--line)", background: "var(--card)", color: "var(--text)" });
+  const rid = el("input", { placeholder: "房间号", inputmode: "numeric" });
+  const addBtn = el("button", { class: "primary" }, "添加");
+  const add = async () => {
+    const id = rid.value.trim();
+    if (!id) return;
+    addBtn.disabled = true;
+    try {
+      const r = await api(`/api/favorites/${sel.value}/${encodeURIComponent(id)}`, { method: "PUT" });
+      toast(r.added ? `已添加：${r.name}（${r.room_id}）` : `已在列表里：${r.name}`);
+      rid.value = "";
+      await loadFavs();
+      render();
+    } catch (e) {
+      toast("添加失败：" + e.message, true);
+    } finally {
+      addBtn.disabled = false;
+    }
+  };
+  addBtn.addEventListener("click", add);
+  rid.addEventListener("keydown", e => { if (e.key === "Enter") add(); });
+
+  // 导入
+  const file = el("input", { type: "file", accept: ".m3u,.m3u8,audio/x-mpegurl,text/plain" });
+  const text = el("textarea", { placeholder: "或者把 m3u 内容粘贴到这里" });
+  const impBtn = el("button", { class: "primary" }, "导入");
+  const impMsg = el("p", { class: "hint" }, "只新增库里没有的频道；已有的频道（包括已收藏的直播间）保持不变。");
+  impBtn.addEventListener("click", async () => {
+    let body, headers = {};
+    if (file.files[0]) { body = new FormData(); body.append("file", file.files[0]); }
+    else if (text.value.trim()) { body = text.value; headers["Content-Type"] = "text/plain; charset=utf-8"; }
+    else { toast("先选择文件或粘贴内容", true); return; }
+    impBtn.disabled = true;
+    try {
+      const r = await api("/api/import", { method: "POST", body, headers });
+      impMsg.textContent = `新增 ${r.added} 个，已存在 ${r.existed} 个（未改动）` + (r.skipped ? `，无法识别 ${r.skipped} 条` : "");
+      file.value = ""; text.value = "";
+      await loadFavs();
+      loadList();
+    } catch (e) {
+      impMsg.textContent = "导入失败：" + e.message;
+    } finally {
+      impBtn.disabled = false;
+    }
+  });
+
+  const list = el("div");
+  v.append(
+    el("section", { class: "card" }, el("h2", {}, "按房间号添加"),
+      el("div", { class: "bar" }, sel, rid, addBtn),
+      el("p", { class: "hint" }, "会自动查询主播名；短号会换成规范房间号，避免同一房间收藏两次。")),
+    el("section", { class: "card" }, el("h2", {}, "导入 m3u"),
+      el("div", { class: "bar" }, file, impBtn), text, impMsg),
+    el("section", { class: "card" }, el("h2", {}, "频道列表"), list));
+
+  async function loadList() {
+    list.replaceChildren(el("div", { class: "loading" }, "加载中…"));
+    let chs;
+    try { chs = await api("/api/channels"); }
+    catch (e) { list.replaceChildren(el("div", { class: "empty" }, "加载失败：" + e.message)); return; }
+    if (!chs.length) { list.replaceChildren(el("div", { class: "empty" }, "还没有频道：去推荐、分区或搜索里点 ☆ 收藏，或者导入 m3u。")); return; }
+    const groups = new Map();
+    for (const c of chs) {
+      const g = c.group || "未分组";
+      if (!groups.has(g)) groups.set(g, []);
+      groups.get(g).push(c);
+    }
+    list.replaceChildren(el("p", { class: "hint" }, `共 ${chs.length} 个频道，${groups.size} 个分组`));
+    for (const [g, items] of groups) {
+      const box = el("div", { class: "group" }, el("h3", {}, `${g}（${items.length}）`));
+      for (const c of items) {
+        const where = c.platform ? `${c.platform}/${c.room_id}` + (c.query ? "?" + c.query : "") : c.url;
+        const del = el("button", { class: "icon", title: "删除" }, "✕");
+        del.addEventListener("click", async () => {
+          if (!confirm(`删除「${c.name}」？`)) return;
+          try {
+            await api("/api/channels/" + c.id, { method: "DELETE" });
+            if (c.platform) state.favs.delete(c.platform + "/" + c.room_id);
+            row.remove();
+            toast("已删除");
+          } catch (e) { toast("删除失败：" + e.message, true); }
+        });
+        const row = el("div", { class: "ch" },
+          c.logo ? el("img", { src: c.logo, loading: "lazy", alt: "", referrerpolicy: "no-referrer" }) : el("img", { alt: "" }),
+          el("div", { class: "txt" },
+            el("div", {}, c.name, el("span", { class: "badge" + (c.source === "favorite" ? " fav" : "") }, c.source === "favorite" ? "收藏" : "导入")),
+            el("div", { class: "sub", title: where }, where)),
+          del);
+        box.append(row);
+      }
+      list.append(box);
+    }
+  }
+  loadList();
+}
+
+const views = { recommend: viewRecommend, category: viewCategory, search: viewSearch, mine: viewMine };
+
+function render() {
+  for (const b of $("#sites").children) b.setAttribute("aria-selected", String(b.dataset.id === state.site.id));
+  for (const b of $("#modes").children) b.setAttribute("aria-selected", String(b.dataset.mode === state.mode));
+  const v = $("#view");
+  v.replaceChildren();
+  views[state.mode](v);
+  try { localStorage.setItem("browse", JSON.stringify({ site: state.site.id, mode: state.mode })); } catch (_) {}
+}
+
+async function init() {
+  $("#plUrl").textContent = playlistURL;
+  $("#plCopy").addEventListener("click", () => copy(playlistURL));
+  for (const b of $("#modes").children) b.addEventListener("click", () => { state.mode = b.dataset.mode; render(); });
+  let saved = {};
+  try { saved = JSON.parse(localStorage.getItem("browse") || "{}"); } catch (_) {}
+  try {
+    state.sites = await api("/api/sites");
+  } catch (e) {
+    $("#view").replaceChildren(el("div", { class: "empty" }, "加载平台失败：" + e.message));
+    return;
+  }
+  for (const s of state.sites) {
+    $("#sites").append(el("button", { role: "tab", "data-id": s.id, onclick: () => { state.site = s; state.catPath = null; render(); } }, s.name));
+  }
+  state.site = state.sites.find(s => s.id === saved.site) || state.sites[0];
+  if (views[saved.mode]) state.mode = saved.mode;
+  await loadFavs();
+  render();
+}
+init();
+</script>
+</body>
+</html>
