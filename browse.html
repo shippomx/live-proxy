@@ -207,6 +207,10 @@
   .ch-card .txt { flex: 1; min-width: 0; }
   .ch-card .n { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .ch-card .m { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .ch-card.bad { border-color: var(--danger); }
+  .ch-card.bad .m { color: var(--danger); }
+  .badge.bad { background: var(--danger-soft); color: var(--danger); }
+  .badge.ok { background: transparent; color: var(--ok); }
   .ch-card .pi { color: var(--muted); opacity: 0; transition: opacity .15s; }
   .ch-card:hover .pi, .ch-card:focus-visible .pi { opacity: 1; color: var(--primary); }
   @media (pointer: coarse) { .ch-card .pi { opacity: .6; } }
@@ -346,7 +350,7 @@
 "use strict";
 const $ = (s, el = document) => el.querySelector(s);
 const playlistURL = location.origin + "/playlist.m3u";
-const state = { sites: [], favs: new Set(), cats: {}, channels: null, lastKw: {} };
+const state = { sites: [], favs: new Set(), cats: {}, channels: null, lastKw: {}, health: new Map() };
 
 // ---------- 工具 ----------
 function el(tag, attrs = {}, ...children) {
@@ -616,6 +620,14 @@ async function viewChannels(v) {
 
   const q = el("input", { type: "search", placeholder: "按名称或地址筛选", "aria-label": "筛选频道", style: "width:220px" });
   const gsel = el("select", { "aria-label": "按分组筛选" }, el("option", { value: "" }, "全部分组"), ...groups.map(g => el("option", { value: g }, g)));
+  // 状态来自"检测失效"的结果，只在本次打开页面期间保留。
+  const hsel = el("select", { "aria-label": "按状态筛选" }, el("option", { value: "" }, "全部状态"),
+    el("option", { value: "ok" }, "可播"), el("option", { value: "bad" }, "失效"), el("option", { value: "none" }, "未检测"));
+  const health = c => state.health.get(c.id);
+  const healthOK = c => {
+    const h = health(c);
+    return !hsel.value || (hsel.value === "none" ? !h : h && (hsel.value === "ok") === h.ok);
+  };
   const ssel = el("select", { "aria-label": "按来源筛选" }, el("option", { value: "" }, "全部来源"),
     el("option", { value: "favorite" }, "收藏"), el("option", { value: "import" }, "导入"));
   const all = el("input", { type: "checkbox", "aria-label": "全选当前页" });
@@ -641,9 +653,47 @@ async function viewChannels(v) {
     m === "grid" ? drawGrid() : draw();
   }
 
+  // 检测失效：逐个调用格式探测接口。直播间没开播是常态，不检测。
+  const checkBtn = el("button", { class: "btn" }, icon("refresh", "width:16px;height:16px"), "检测失效");
+  const pickBad = el("button", { class: "btn danger", hidden: true }, icon("trash", "width:16px;height:16px"), "选中全部失效");
+  let checking = null;
+  checkBtn.addEventListener("click", async () => {
+    if (checking) { checking.cancel = true; return; }
+    const targets = chs.filter(c => !c.platform);
+    const job = checking = { cancel: false };
+    let done = 0, bad = 0;
+    const label = () => checkBtn.replaceChildren(icon("x", "width:16px;height:16px"), `检测中 ${done}/${targets.length}（点击取消）`);
+    label();
+    const queue = targets.slice();
+    const worker = async () => {
+      while (queue.length && !job.cancel) {
+        const c = queue.shift();
+        try { await api(`/api/channels/${c.id}/probe`); state.health.set(c.id, { ok: true }); }
+        catch (e) { bad++; state.health.set(c.id, { ok: false, error: e.message }); }
+        done++; label();
+      }
+    };
+    await Promise.all(Array.from({ length: 6 }, worker));
+    checking = null;
+    checkBtn.replaceChildren(icon("refresh", "width:16px;height:16px"), "重新检测");
+    pickBad.hidden = !bad;
+    toast(job.cancel ? `已取消：检测了 ${done} 个，失效 ${bad} 个` : `检测完成：${targets.length} 个频道，失效 ${bad} 个（直播间不检测）`, bad > 0);
+    if (bad && !job.cancel) hsel.value = "bad";
+    filter();
+  });
+  pickBad.addEventListener("click", () => {
+    for (const c of chs) if (health(c) && !health(c).ok) selected.add(c.id);
+    hsel.value = "bad";
+    setMode("table");
+    filter();
+    toast(`已选中 ${selected.size} 个失效频道，确认无误后点"删除所选"`);
+  });
+  hsel.addEventListener("change", () => filter());
+  if ([...state.health.values()].some(h => !h.ok)) pickBad.hidden = false;
+
   const filter = () => {
     const kw = q.value.trim().toLowerCase();
-    rows = chs.filter(c => (!gsel.value || (c.group || "未分组") === gsel.value) && (!ssel.value || c.source === ssel.value) &&
+    rows = chs.filter(c => (!gsel.value || (c.group || "未分组") === gsel.value) && (!ssel.value || c.source === ssel.value) && healthOK(c) &&
       (!kw || c.name.toLowerCase().includes(kw) || addr(c).toLowerCase().includes(kw)));
     page = 0;
     mode === "grid" ? drawGrid() : draw();
@@ -676,10 +726,10 @@ async function viewChannels(v) {
       ...[...groups].map(([g, list]) => el("section", { class: "ch-sec", id: ids.get(g) },
         el("h3", {}, g, el("span", { class: "badge" }, String(list.length))),
         el("div", { class: "ch-grid" }, ...list.map(c =>
-          el("button", { class: "ch-card", title: `${c.name}\n${addr(c)}`, onclick: () => openPlayer({ channel: c }) },
+          el("button", { class: "ch-card" + (health(c) && !health(c).ok ? " bad" : ""), title: `${c.name}\n${addr(c)}` + (health(c) && !health(c).ok ? "\n失效：" + health(c).error : ""), onclick: () => openPlayer({ channel: c }) },
             el("span", { class: "logo", "aria-hidden": "true" }, (c.name || "?").trim().slice(0, 1),
               c.logo ? el("img", { src: c.logo, loading: "lazy", alt: "", referrerpolicy: "no-referrer" }) : null),
-            el("span", { class: "txt" }, el("span", { class: "n", style: "display:block" }, c.name), el("span", { class: "m", style: "display:block" }, where(c))),
+            el("span", { class: "txt" }, el("span", { class: "n", style: "display:block" }, c.name), el("span", { class: "m", style: "display:block" }, health(c) && !health(c).ok ? "失效 · " + health(c).error : where(c))),
             el("span", { class: "pi" }, icon("play", "width:18px;height:18px"))))))));
   }
 
@@ -690,7 +740,8 @@ async function viewChannels(v) {
       const tr = el("tr", { "aria-selected": String(selected.has(c.id)) },
         el("td", {}, cb),
         el("td", { class: "logo" }, c.logo ? el("img", { src: c.logo, loading: "lazy", alt: "", referrerpolicy: "no-referrer" }) : el("img", { alt: "" })),
-        el("td", { class: "name", title: c.name }, c.name),
+        el("td", { class: "name", title: c.name + (health(c) && !health(c).ok ? "\n失效：" + health(c).error : "") }, c.name,
+          health(c) ? el("span", { class: "badge " + (health(c).ok ? "ok" : "bad"), style: "margin-left:6px" }, health(c).ok ? "可播" : "失效") : null),
         el("td", {}, el("span", { class: "badge" }, c.group || "未分组")),
         el("td", {}, el("span", { class: "badge" + (c.source === "favorite" ? " fav" : "") }, c.source === "favorite" ? "收藏" : "导入")),
         el("td", { class: "addr mono", title: addr(c) }, addr(c)),
@@ -750,7 +801,7 @@ async function viewChannels(v) {
       tbody)),
     pagerBar);
   box.replaceWith(stats, el("section", { class: "panel" },
-    el("div", { class: "panel-head" }, el("div", { class: "toolbar" }, q, gsel, ssel), modeTabs),
+    el("div", { class: "panel-head" }, el("div", { class: "toolbar" }, q, gsel, ssel, hsel), el("div", { class: "toolbar" }, checkBtn, pickBad, modeTabs)),
     gridBox, tableBox));
   setMode(mode === "table" ? "table" : "grid");
   filter();
@@ -886,6 +937,15 @@ function showMsg(text) { const m = $("#plMsg"); m.textContent = text || ""; m.hi
 // 浏览器解码能力有限：MP2 音频、部分 HEVC 播不了，此时给出明确提示而不是一直黑屏转圈。
 const codecHint = "浏览器可能不支持这个频道的音视频编码（常见于组播的 MP2 音频或 HEVC 画面），电视上的播放器通常可以正常播放。";
 
+// 视频元素自己的错误才是根因：它出错后播放库再追加数据只会报
+// "appendBuffer … HTMLMediaElement.error attribute is not null"，看不出原因。
+function mediaErrText(v, fallback) {
+  const e = v.error;
+  if (!e) return fallback || "未知原因";
+  const name = { 1: "已中止", 2: "网络错误", 3: "解码失败", 4: "格式不支持" }[e.code] || "错误 " + e.code;
+  return e.message ? `${name}：${e.message}` : name;
+}
+
 // 网络类错误时重连；连续失败 MAX_RECONNECT 次才放弃。返回 true 表示已安排重连。
 function scheduleReconnect(kind, url, token) {
   if (token !== reconnect.token || reconnect.n >= MAX_RECONNECT || !$("#player").open) return false;
@@ -915,8 +975,8 @@ async function playURL(kind, url, isRetry = false) {
         const h = engine = new Hls({ liveDurationInfinity: true });
         h.on(Hls.Events.ERROR, (_, d) => {
           if (!d.fatal) return;
-          if (d.type === "networkError" && scheduleReconnect(kind, url, token)) return;
-          showMsg("播放失败：" + (d.details || d.type) + "。" + (d.type === "mediaError" ? codecHint : "源可能已失效。"));
+          if ((d.type === "networkError" || (d.type === "mediaError" && v.currentTime > 0)) && scheduleReconnect(kind, url, token)) return;
+          showMsg("播放失败：" + (d.details || d.type) + "（" + mediaErrText(v, d.error && d.error.message) + "）。" +(d.type === "mediaError" ? codecHint : "源可能已失效。"));
         });
         h.on(Hls.Events.MANIFEST_PARSED, () => v.play().catch(() => {}));
         h.loadSource(abs); h.attachMedia(v);
@@ -930,8 +990,10 @@ async function playURL(kind, url, isRetry = false) {
         { enableWorker: false, lazyLoad: false, liveBufferLatencyChasing: true, autoCleanupSourceBuffer: true });
       p.on(mpegts.Events.ERROR, (type, detail, info) => {
         const media = type === mpegts.ErrorTypes.MEDIA_ERROR;
-        if (type === mpegts.ErrorTypes.NETWORK_ERROR && scheduleReconnect(kind, url, token)) return;
-        showMsg("播放失败：" + (detail || type) + (info && info.msg ? "（" + info.msg + "）" : "") + "。" + (media ? codecHint : "主播可能已下播，或线路不可用，换条线路试试。"));
+        // 已经出过画面后才报媒体错误，多半是流中途换了参数（中转续接换了 CDN、组播换了节目），
+        // 解码器拒收后续数据——不是浏览器不支持，重开一次就好，和断网一样重连。
+        if ((type === mpegts.ErrorTypes.NETWORK_ERROR || (media && v.currentTime > 0)) && scheduleReconnect(kind, url, token)) return;
+        showMsg("播放失败：" + (detail || type) + "（" + mediaErrText(v, info && info.msg) + "）。" + (media ? codecHint : "主播可能已下播，或线路不可用，换条线路试试。"));
       });
       p.on(mpegts.Events.MEDIA_INFO, mi => {
         if (mi && mi.hasAudio === false && kind === "mpegts") toast("这个频道没有可播放的音轨（浏览器不支持其音频编码）", true);
