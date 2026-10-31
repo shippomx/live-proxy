@@ -27,6 +27,23 @@ type QRLogin interface {
 type QRCode struct {
 	Key     string
 	Content string
+	// Image 平台自己给的二维码图片（如微信开放平台），非空时直接展示它而不是由 Content 生成：
+	// 自己重新编码可能和平台图片里的内容有出入，扫出来对不上时无从排查。
+	Image     []byte
+	ImageType string
+}
+
+// QRMethod 一种扫码方式。
+type QRMethod struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
+// QRMethodLogin 平台支持多种扫码方式时实现（如斗鱼可用斗鱼 App 或微信扫码）。
+// 不论用哪种方式，QRPoll 都能凭 Key 认出对应的流程，最终得到同一份平台 Cookie。
+type QRMethodLogin interface {
+	QRMethods() []QRMethod // 第一个是默认方式，等同于 QRStart
+	QRStartMethod(ctx context.Context, method string) (QRCode, error)
 }
 
 type QRState string
@@ -35,6 +52,7 @@ const (
 	QRWaiting QRState = "waiting" // 未扫码
 	QRScanned QRState = "scanned" // 已扫码，等待手机上确认
 	QRExpired QRState = "expired" // 二维码失效，需要重新生成
+	QRCancel  QRState = "cancel"  // 用户在手机上取消了
 	QRDone    QRState = "done"    // 登录成功
 )
 

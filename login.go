@@ -128,6 +128,8 @@ type platformStatus struct {
 	Note     string `json:"note,omitempty"`
 	Error    string `json:"error,omitempty"`
 	Saved    bool   `json:"saved"` // 是否会持久化（设置了 -data）
+	// Methods 可用的扫码方式，页面按它出按钮。只有一种方式的平台给一个 ID 为空的默认项。
+	Methods []sites.QRMethod `json:"methods"`
 }
 
 func handleLoginPlatforms(w http.ResponseWriter, r *http.Request) {
@@ -135,7 +137,11 @@ func handleLoginPlatforms(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	var out []platformStatus
 	for _, q := range qrLogins() {
-		st := platformStatus{ID: q.ID(), Name: q.Name(), Saved: loginDir != ""}
+		st := platformStatus{ID: q.ID(), Name: q.Name(), Saved: loginDir != "",
+			Methods: []sites.QRMethod{{Name: "扫码登录"}}}
+		if mq, ok := q.(sites.QRMethodLogin); ok {
+			st.Methods = mq.QRMethods()
+		}
 		if c := currentCookie(q); c != "" {
 			a, err := q.Account(ctx, c)
 			if err != nil {
@@ -183,20 +189,34 @@ func handleLoginQRCode(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
-	code, err := q.QRStart(ctx)
+	var code sites.QRCode
+	var err error
+	if method := r.URL.Query().Get("method"); method != "" {
+		mq, ok := q.(sites.QRMethodLogin)
+		if !ok {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "该平台只有一种扫码方式"})
+			return
+		}
+		code, err = mq.QRStartMethod(ctx, method)
+	} else {
+		code, err = q.QRStart(ctx)
+	}
 	if err != nil {
 		loggerFrom(r.Context()).Warn("申请登录二维码失败", "platform", q.ID(), "err", err)
 		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
 		return
 	}
-	png, err := qrcode.Encode(code.Content, qrcode.Medium, 280)
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-		return
+	img, typ := code.Image, code.ImageType
+	if len(img) == 0 {
+		if img, err = qrcode.Encode(code.Content, qrcode.Medium, 280); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+		typ = "image/png"
 	}
 	writeJSON(w, http.StatusOK, map[string]string{
 		"key": code.Key,
-		"png": "data:image/png;base64," + base64.StdEncoding.EncodeToString(png),
+		"png": "data:" + typ + ";base64," + base64.StdEncoding.EncodeToString(img),
 	})
 }
 
@@ -208,7 +228,10 @@ func handleLoginPoll(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "缺少平台或 key"})
 		return
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+	// 微信扫码是长轮询（约 15~30 秒才返回），加上回调种 Cookie，会超过服务器统一的
+	// 40 秒写超时；这里单独放宽，否则成功那一次的响应恰好写不出去。
+	_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(70 * time.Second))
+	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
 	defer cancel()
 	res, err := q.QRPoll(ctx, key)
 	if err != nil {

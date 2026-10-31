@@ -200,3 +200,39 @@ func TestLoginQRStartLive(t *testing.T) {
 		t.Logf("%s ✅ 二维码内容 %s", q.ID(), code.Content)
 	}
 }
+
+// fakeMethodLogin 支持多种扫码方式的假平台，"weixin" 方式自带 JPEG 图片。
+type fakeMethodLogin struct {
+	*fakeLogin
+	gotMethod string
+}
+
+func (f *fakeMethodLogin) QRMethods() []sites.QRMethod {
+	return []sites.QRMethod{{ID: "app", Name: "App 扫码"}, {ID: "weixin", Name: "微信扫码"}}
+}
+func (f *fakeMethodLogin) QRStartMethod(_ context.Context, m string) (sites.QRCode, error) {
+	f.gotMethod = m
+	return sites.QRCode{Key: "wx:1", Content: "x", Image: []byte{0xFF, 0xD8, 0xFF}, ImageType: "image/jpeg"}, nil
+}
+
+// TestLoginMethods ?method= 交给平台对应方式；平台自带的图片原样转发，不重新编码；
+// 状态接口列出可用方式；只有一种方式的平台带 method 应明确报错。
+func TestLoginMethods(t *testing.T) {
+	f := &fakeMethodLogin{fakeLogin: &fakeLogin{id: "bilibili", states: []sites.QRState{sites.QRWaiting}}}
+	srv := withFakeLogin(t, f.fakeLogin)
+	registry["bilibili"] = f
+
+	_, m, _ := call(t, "POST", srv.URL+"/login/bilibili/qrcode?method=weixin")
+	if f.gotMethod != "weixin" || m["key"] != "wx:1" || m["png"] != "data:image/jpeg;base64,/9j/" {
+		t.Fatalf("应按 weixin 方式生成并原样转发 JPEG: method=%q %v", f.gotMethod, m)
+	}
+	_, _, raw := call(t, "GET", srv.URL+"/login/platforms")
+	if !strings.Contains(raw, `"id":"weixin"`) || !strings.Contains(raw, "微信扫码") {
+		t.Fatalf("状态接口应列出扫码方式: %s", raw)
+	}
+
+	registry["bilibili"] = f.fakeLogin // 只有一种方式
+	if code, _, _ := call(t, "POST", srv.URL+"/login/bilibili/qrcode?method=weixin"); code != http.StatusNotFound {
+		t.Fatalf("单一方式的平台带 method 应 404，实际 %d", code)
+	}
+}

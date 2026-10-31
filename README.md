@@ -55,6 +55,9 @@ GET /login                        → 扫码登录页（B站、斗鱼）
 
 - 流程：B站参考 dart_simple_live（`passport.bilibili.com/x/passport-login/web/qrcode`），
   斗鱼取自 passport.douyu.com 登录页的 `app-login-all.js`（`/scan/generateCode` → `/japi/scan/auth` → 访问回调地址种 Cookie）。
+- 斗鱼另支持**微信扫码**：走微信开放平台标准网页扫码（`open.weixin.qq.com/connect/qrconnect`，斗鱼 appid
+  `wx8628eaef85e3a193`），长轮询 `lp.open.weixin.qq.com` 拿到 `wx_code` 后，用同一个 Cookie 罐访问斗鱼回调
+  （`state` 与斗鱼种下的 `acf_devid` 绑定），所以服务端按二维码保存会话。微信须已关联斗鱼账号。
 - Cookie 存在 `-data` 目录（容器里是 `/opt/live-proxy/data`，0600），重启自动加载并校验是否失效。
 - 扫码后先校验能否真正登录，再替换正在使用的 Cookie：一次失败的扫码不会顶掉原本有效的登录。
 - 页面与接口都不回显 Cookie，但局域网内的设备都能打开该页、扫码或退出登录。

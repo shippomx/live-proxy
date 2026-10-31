@@ -22,6 +22,10 @@ type Douyu struct {
 	// 运行中会被扫码登录替换，读写经过 SetCookie/loginCookie。
 	ckMu   sync.RWMutex
 	cookie string
+
+	// 微信扫码登录进行中的会话，key 为 QRCode.Key。
+	wxMu sync.Mutex
+	wx   map[string]*douyuWxSession
 }
 
 func (d *Douyu) SetCookie(c string) {
