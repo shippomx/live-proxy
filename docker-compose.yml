@@ -1,0 +1,36 @@
+# 在路由器上: docker compose up -d
+# 端口与中转默认值用环境变量覆盖: PORT=9001 RELAY=true docker compose up -d
+services:
+  live-proxy:
+    image: live-proxy:latest
+    container_name: live-proxy
+    # 必须用 host 网络：R5S 的 dockerd 配了 "iptables": false，bridge 网络下容器出网
+    # 不一定有 NAT；而且端口经 docker-proxy 转发后，日志里 remote 全是 172.17.0.1，
+    # 排障时分不清是哪台电视在请求。
+    network_mode: host
+    restart: unless-stopped
+    command: ["-addr", ":${PORT:-9000}", "-relay=${RELAY:-false}", "-data", "/data"]
+    # 扫码登录的 Cookie 存这里（根文件系统只读，这是唯一可写的地方）。
+    # 目录属主须为 65534（容器内的 nobody），deploy-docker.sh 会建好。
+    volumes:
+      - ./data:/data
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+# R5S 上的 CasaOS（容器 casa，:81）按这个文件注册应用，删掉这段 CasaOS 里就只显示 unknown。
+x-casaos:
+  author: local
+  category: Network
+  index: /login
+  main: live-proxy
+  port_map: "9000"
+  scheme: http
+  title:
+    en_US: Live Proxy
+    zh_CN: 直播中转

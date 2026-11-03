@@ -1,0 +1,196 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>直播登录</title>
+<style>
+  :root {
+    --bg: #f5f6f8; --card: #ffffff; --text: #1d2129; --muted: #6b7280;
+    --line: #e5e7eb; --ok: #16a34a; --warn: #d97706; --err: #dc2626; --btn: #2563eb; --btn-text: #fff;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #111318; --card: #1b1e25; --text: #e6e8eb; --muted: #9aa1ac;
+      --line: #2c313a; --ok: #4ade80; --warn: #fbbf24; --err: #f87171; --btn: #3b82f6; --btn-text: #fff;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 15px/1.6 -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif; }
+  main { max-width: 760px; margin: 0 auto; padding: 24px 16px 48px; }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  .sub { color: var(--muted); margin: 0 0 20px; font-size: 14px; }
+  .grid { display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 18px; }
+  .card h2 { font-size: 17px; margin: 0 0 6px; display: flex; justify-content: space-between; align-items: center; }
+  .badge { font-size: 12px; font-weight: 500; padding: 2px 10px; border-radius: 999px; border: 1px solid currentColor; }
+  .badge.ok { color: var(--ok); } .badge.off { color: var(--muted); } .badge.err { color: var(--err); }
+  .user { margin: 0 0 12px; color: var(--muted); min-height: 1.6em; overflow-wrap: anywhere; }
+  .qr { display: none; text-align: center; margin: 8px 0 12px; }
+  .qr img { width: 220px; height: 220px; background: #fff; padding: 8px; border-radius: 8px; }
+  .state { text-align: center; font-size: 14px; color: var(--muted); margin-top: 6px; }
+  .qr .refresh { margin-top: 8px; font-size: 13px; padding: 4px 12px; }
+  .state.ok { color: var(--ok); } .state.warn { color: var(--warn); } .state.err { color: var(--err); }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; }
+  button { font: inherit; padding: 8px 16px; border-radius: 8px; border: 1px solid var(--line);
+           background: var(--card); color: var(--text); cursor: pointer; }
+  button.primary { background: var(--btn); color: var(--btn-text); border-color: var(--btn); }
+  button:disabled { opacity: .5; cursor: default; }
+  .note { margin-top: 24px; font-size: 13px; color: var(--muted); }
+  .note li { margin: 4px 0; }
+</style>
+</head>
+<body>
+<main>
+  <h1>直播平台登录</h1>
+  <p class="sub">用对应平台的手机 App 扫码。登录后取流立即使用高画质，无需重启。</p>
+  <div class="grid" id="list"><div class="card">加载中…</div></div>
+  <ul class="note">
+    <li>B站、斗鱼不登录时会被降级：B站最高超清，斗鱼请求原画会变成高清。</li>
+    <li>斗鱼可用斗鱼 App 或微信扫码；微信需已关联斗鱼账号，否则请先在斗鱼 App 里用微信登录一次。</li>
+    <li>虎牙不登录就是原画，不需要登录。</li>
+    <li id="persist"></li>
+    <li>本页不会显示登录凭据，但局域网内的设备都能打开本页、扫码或退出登录。</li>
+  </ul>
+</main>
+<script>
+const $ = (s, el = document) => el.querySelector(s);
+// 每个平台当前进行中的登录会话号。轮询是"上一次返回再发下一次"（微信是 15~30 秒的长轮询，
+// 定时器并发发请求会堆积），换码或退出时递增会话号，让旧的轮询循环自行结束。
+const session = {};
+const lastMethod = {}; // 每个平台上一次使用的扫码方式，供"刷新二维码"沿用
+
+async function api(method, url) {
+  const r = await fetch(url, { method });
+  let body = {};
+  try { body = await r.json(); } catch (_) {}
+  if (!r.ok) throw new Error(body.error || ("HTTP " + r.status));
+  return body;
+}
+
+function card(p) {
+  const el = document.createElement("div");
+  el.className = "card";
+  el.id = "p-" + p.id;
+  el.innerHTML = `
+    <h2><span class="name"></span><span class="badge"></span></h2>
+    <p class="user"></p>
+    <div class="qr"><img alt="登录二维码"><div class="state"></div>
+      <button class="refresh">刷新二维码</button></div>
+    <div class="row"><span class="methods"></span><button class="logout">退出登录</button></div>`;
+  $(".name", el).textContent = p.name;
+  const box = $(".methods", el);
+  box.style.display = "contents";
+  (p.methods || [{ id: "", name: "扫码登录" }]).forEach((m, i) => {
+    const b = document.createElement("button");
+    b.className = "login" + (i === 0 ? " primary" : "");
+    b.textContent = m.name;
+    b.onclick = () => {
+      // 点了哪种方式，哪个按钮就切成主色，一眼看出当前二维码是给哪个 App 扫的。
+      box.querySelectorAll(".login").forEach(x => x.classList.toggle("primary", x === b));
+      startLogin(p.id, m.id, b);
+    };
+    box.appendChild(b);
+  });
+  $(".logout", el).onclick = () => logout(p.id);
+  // 按上一次的扫码方式重新生成；二维码过期、扫错或想换一张时用。
+  $(".refresh", el).onclick = e => startLogin(p.id, lastMethod[p.id] || "", e.target);
+  render(el, p);
+  return el;
+}
+
+function render(el, p) {
+  const badge = $(".badge", el), user = $(".user", el);
+  if (p.logged_in) {
+    badge.className = "badge ok"; badge.textContent = "已登录";
+    user.textContent = p.user + (p.note ? "（" + p.note + "）" : "");
+  } else if (p.error) {
+    badge.className = "badge err"; badge.textContent = "需重新登录";
+    user.textContent = p.error;
+  } else {
+    badge.className = "badge off"; badge.textContent = "未登录";
+    user.textContent = "匿名取流，画质受限";
+  }
+  $(".logout", el).disabled = !p.logged_in && !p.error;
+}
+
+function setState(id, text, cls) {
+  const s = $("#p-" + id + " .state");
+  s.textContent = text; s.className = "state " + (cls || "");
+}
+
+async function load() {
+  const list = $("#list");
+  try {
+    const ps = await api("GET", "/login/platforms");
+    list.innerHTML = "";
+    ps.forEach(p => list.appendChild(card(p)));
+    $("#persist").textContent = ps.length && ps[0].saved
+      ? "登录信息保存在路由器上，重启后自动生效。"
+      : "注意：服务未设置 -data 目录，登录只在本次运行期间有效。";
+  } catch (e) {
+    list.innerHTML = '<div class="card">加载失败：' + e.message + "</div>";
+  }
+}
+
+async function startLogin(id, method, btn) {
+  const sid = session[id] = (session[id] || 0) + 1;
+  lastMethod[id] = method;
+  const el = $("#p-" + id), qr = $(".qr", el);
+  btn.disabled = true;
+  qr.style.display = "block";
+  $("img", qr).removeAttribute("src");
+  setState(id, "正在生成二维码…");
+  let key;
+  try {
+    const q = method ? "?method=" + encodeURIComponent(method) : "";
+    const r = await api("POST", "/login/" + id + "/qrcode" + q);
+    key = r.key;
+    $("img", qr).src = r.png;
+    setState(id, method === "weixin" ? "请用微信扫码" : "请用手机 App 扫码");
+  } catch (e) {
+    setState(id, "生成二维码失败：" + e.message, "err");
+    return;
+  } finally {
+    btn.disabled = false;
+  }
+  poll(id, key, sid);
+}
+
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+async function poll(id, key, sid) {
+  while (session[id] === sid) {
+    let r;
+    try {
+      r = await api("GET", "/login/" + id + "/poll?key=" + encodeURIComponent(key));
+    } catch (e) {
+      if (session[id] === sid) setState(id, "登录失败：" + e.message, "err");
+      return;
+    }
+    if (session[id] !== sid) return;
+    switch (r.state) {
+      case "waiting": break;
+      case "scanned": setState(id, "已扫码，请在手机上确认", "warn"); break;
+      case "expired": return setState(id, "二维码已过期，请点“刷新二维码”", "err");
+      case "cancel":  return setState(id, "已在手机上取消，请点“刷新二维码”", "err");
+      case "done":
+        setState(id, "登录成功：" + r.user, "ok");
+        setTimeout(() => { $(".qr", $("#p-" + id)).style.display = "none"; load(); }, 1500);
+        return;
+    }
+    await sleep(1500);
+  }
+}
+
+async function logout(id) {
+  session[id] = (session[id] || 0) + 1;
+  try { await api("POST", "/login/" + id + "/logout"); } catch (e) { alert(e.message); }
+  load();
+}
+
+load();
+</script>
+</body>
+</html>
