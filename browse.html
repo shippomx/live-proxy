@@ -59,6 +59,16 @@
   .nav a:hover { background: var(--side-hover); color: #fff; }
   .nav a[aria-current="page"] { background: var(--side-hover); color: #fff; box-shadow: inset 3px 0 0 var(--side-active); }
   .nav .count { margin-left: auto; font-size: 12px; color: var(--side-muted); }
+  .subnav { margin: 2px 0 var(--s2) 30px; border-left: 1px solid rgba(148, 163, 184, .25); padding-left: 6px; }
+  .subnav[hidden] { display: none; }
+  .subnav a { padding: 5px 8px; font-size: 12px; }
+  .context-menu { position: fixed; z-index: 100; min-width: 180px; max-height: min(420px, calc(100vh - 16px)); overflow-y: auto;
+                  padding: 5px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: 0 8px 24px rgba(15, 23, 42, .2); }
+  .context-menu button { display: block; width: 100%; border: 0; border-radius: 6px; padding: 7px 10px; text-align: left;
+                         color: var(--text); background: transparent; font: inherit; cursor: pointer; }
+  .context-menu button:hover, .context-menu button:focus-visible { background: var(--surface-2); }
+  .context-menu button.danger { color: var(--danger); }
+  .context-menu button:disabled { color: var(--subtle); cursor: default; }
   .side-foot { margin-top: auto; padding: var(--s4); font-size: 12px; color: var(--side-muted);
                border-top: 1px solid rgba(148, 163, 184, .15); }
   .side-foot a { color: var(--side-text); }
@@ -161,6 +171,9 @@
   th { font-weight: 600; color: var(--muted); background: var(--surface-2); position: sticky; top: 0; white-space: nowrap; font-size: 12px; }
   tbody tr:hover { background: var(--surface-2); }
   tbody tr[aria-selected="true"] { background: var(--primary-soft); }
+  [draggable="true"] { cursor: grab; }
+  [draggable="true"].dragging { opacity: .45; }
+  [draggable="true"].drag-over { outline: 2px solid var(--primary); outline-offset: -2px; }
   td.logo img { width: 28px; height: 28px; border-radius: 6px; object-fit: contain; background: var(--surface-2); display: block; }
   td.name { font-weight: 500; max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   td.addr { max-width: 340px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); }
@@ -213,6 +226,9 @@
   .badge.ok { background: transparent; color: var(--ok); }
   .ch-card .pi { color: var(--muted); opacity: 0; transition: opacity .15s; }
   .ch-card:hover .pi, .ch-card:focus-visible .pi { opacity: 1; color: var(--primary); }
+  .channel-item { position: relative; }
+  .channel-item .ch-card { padding-right: 42px; }
+  .channel-item .move-group { position: absolute; right: 8px; bottom: 8px; z-index: 1; }
   @media (pointer: coarse) { .ch-card .pi { opacity: .6; } }
   .seg-tabs { display: inline-flex; gap: 2px; padding: 3px; background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius); }
   .seg-tabs button { border: 0; background: transparent; color: var(--muted); font: inherit; font-size: 13px; padding: 0 var(--s3); height: 28px; border-radius: 6px; cursor: pointer; }
@@ -220,13 +236,15 @@
   .anchors { display: grid; gap: var(--s3); grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); }
   .anchor { display: flex; align-items: center; gap: var(--s3); padding: var(--s3); background: var(--surface);
             border: 1px solid var(--border); border-radius: 10px; }
+  .result-open { flex: 1; min-width: 0; border: 0; padding: 0; background: none; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+  .anchor .result-open { display: flex; align-items: center; gap: var(--s3); }
   .anchor .ava { position: relative; flex: none; }
   .anchor .ava img { width: 48px; height: 48px; border-radius: 50%; object-fit: cover; background: var(--surface-2); display: block; }
   .anchor .ava .dot { position: absolute; right: 0; bottom: 0; width: 12px; height: 12px; border-radius: 50%;
                       background: var(--ok); border: 2px solid var(--surface); }
   .anchor .txt { flex: 1; min-width: 0; }
-  .anchor .n { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .anchor .m { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .anchor .n { display: block; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .anchor .m { display: block; color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .live-badge { display: inline-flex; align-items: center; height: 18px; padding: 0 6px; border-radius: 4px; font-size: 11px;
                 background: var(--ok); color: #fff; margin-left: 6px; vertical-align: 1px; }
   @media (prefers-color-scheme: dark) { .live-badge { color: #052e16; } }
@@ -239,6 +257,9 @@
   dialog#player { width: min(1080px, calc(100% - 32px)); max-height: calc(100% - 32px); padding: 0; border: 1px solid var(--border);
                   border-radius: 12px; background: var(--surface); color: var(--text); overflow: hidden; }
   dialog#player::backdrop { background: rgba(2, 6, 23, .7); }
+  dialog.group-dialog { width: min(420px, calc(100% - 32px)); border: 1px solid var(--border); border-radius: 10px;
+                        padding: var(--s4); background: var(--surface); color: var(--text); }
+  dialog.group-dialog::backdrop { background: rgba(2, 6, 23, .55); }
   .pl-head { display: flex; align-items: center; gap: var(--s3); padding: var(--s3) var(--s4); border-bottom: 1px solid var(--border); }
   .pl-head img { width: 36px; height: 36px; border-radius: 50%; object-fit: cover; background: var(--surface-2); flex: none; }
   .pl-head .txt { flex: 1; min-width: 0; }
@@ -316,8 +337,8 @@
     </nav>
     <nav class="nav-sec nav" aria-label="频道管理">
       <h2>频道管理</h2>
-      <a data-view="favorites" href="#/favorites"><svg class="i"><use href="#i-star"/></svg>我的网络收藏</a>
-      <a data-view="channels" href="#/channels"><svg class="i"><use href="#i-list"/></svg>频道列表<span class="count" id="navCount"></span></a>
+      <a data-view="channels" id="channelNavLink" href="#/channels"><svg class="i"><use href="#i-list"/></svg>频道列表<span class="count" id="navCount"></span></a>
+      <div class="subnav" id="channelGroups" hidden></div>
       <a data-view="import" href="#/import"><svg class="i"><use href="#i-upload"/></svg>导入与添加</a>
       <a data-view="epg" href="#/epg"><svg class="i"><use href="#i-cal"/></svg>节目单</a>
     </nav>
@@ -356,7 +377,7 @@
 "use strict";
 const $ = (s, el = document) => el.querySelector(s);
 const playlistURL = location.origin + "/playlist.m3u";
-const state = { sites: [], favs: new Set(), cats: {}, channels: null, lastKw: {}, health: new Map() };
+const state = { sites: [], favs: new Set(), cats: {}, channels: null, groups: [], lastKw: {}, health: new Map() };
 
 // ---------- 工具 ----------
 function el(tag, attrs = {}, ...children) {
@@ -397,15 +418,42 @@ const streamURL = (p, rid) => location.origin + "/" + p + "/" + encodeURICompone
 const fmtTime = s => { const d = new Date(s * 1000); return `${d.getMonth() + 1}-${String(d.getDate()).padStart(2, "0")} ${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`; };
 async function copy(text) {
   try { await navigator.clipboard.writeText(text); toast("已复制：" + text); }
-  catch (_) { prompt("复制下面的地址", text); }
+  catch (_) {
+    const input = el("textarea", { style: "position:fixed;left:-9999px;top:0", readonly: true }, text);
+    document.body.append(input); input.select();
+    try {
+      if (!document.execCommand("copy")) throw new Error("copy failed");
+      toast("已复制：" + text);
+    } catch (_) { toast("复制失败，请检查浏览器剪贴板权限", true); }
+    input.remove();
+  }
 }
 const siteName = id => (state.sites.find(s => s.id === id) || {}).name || id;
 
-// ---------- 路由：#/{平台}/{视图}[/...]，频道管理 #/favorites、#/channels、#/import ----------
+let contextMenu = null;
+function closeContextMenu() { if (contextMenu) { contextMenu.remove(); contextMenu = null; } }
+function openContextMenu(e, items) {
+  e.preventDefault(); closeContextMenu();
+  contextMenu = el("div", { class: "context-menu", role: "menu" }, ...items.map(item =>
+    el("button", { class: item.danger ? "danger" : "", disabled: item.disabled, role: "menuitem", onclick: () => {
+      closeContextMenu(); item.action();
+    } }, item.label)));
+  document.body.append(contextMenu);
+  const rect = contextMenu.getBoundingClientRect();
+  contextMenu.style.left = Math.max(8, Math.min(e.clientX, innerWidth - rect.width - 8)) + "px";
+  contextMenu.style.top = Math.max(8, Math.min(e.clientY, innerHeight - rect.height - 8)) + "px";
+  contextMenu.querySelector("button:not(:disabled)")?.focus();
+}
+
+// ---------- 路由：#/{平台}/{视图}[/...]，频道管理 #/channels[/分组]、#/import ----------
 // 视图写进地址栏：刷新不丢位置，浏览器"后退"能回到上一个分区。
 function parseRoute() {
-  const parts = location.hash.replace(/^#\/?/, "").split("/").map(decodeURIComponent).filter(Boolean);
-  if (["favorites", "channels", "import", "epg"].includes(parts[0])) return { view: parts[0] };
+  const [path, query = ""] = location.hash.replace(/^#\/?/, "").split("?");
+  const parts = path.split("/").map(decodeURIComponent).filter(Boolean);
+  if (["channels", "import", "epg"].includes(parts[0])) {
+    const params = new URLSearchParams(query);
+    return { view: parts[0], a: params.get("group"), hasGroup: params.has("group") };
+  }
   const site = state.sites.some(s => s.id === parts[0]) ? parts[0] : (loadPref().site || state.sites[0].id);
   const view = ["recommend", "category", "search"].includes(parts[1]) ? parts[1] : "recommend";
   return { site, view, a: parts[2], b: parts[3], c: parts[4] };
@@ -419,7 +467,49 @@ async function loadFavs() {
   try { state.favs = new Set(await api("/api/favorites")); } catch (e) { toast("读取收藏失败：" + e.message, true); }
 }
 async function loadCount() {
-  try { const chs = await api("/api/channels"); state.channels = chs; $("#navCount").textContent = chs.length || ""; } catch (_) {}
+  try {
+    const [chs, names] = await Promise.all([api("/api/channels"), api("/api/groups")]);
+    state.channels = chs; $("#navCount").textContent = chs.length || "";
+    state.groups = names;
+    const groups = new Map(names.map(g => [g, 0]));
+    for (const c of chs) groups.set(c.group || "", (groups.get(c.group || "") || 0) + 1);
+    $("#channelGroups").replaceChildren(
+      el("a", { href: "#/channels", oncontextmenu: e => openContextMenu(e, [{ label: "新增分组", action: addChannelGroup }]) }, `全部频道 ${chs.length}`),
+      ...[...groups].map(([g, n]) => el("a", { href: `#/channels?group=${encodeURIComponent(g)}`, "data-group": g,
+        oncontextmenu: e => openContextMenu(e, g ? [
+          { label: "重命名分组", action: () => renameChannelGroup(g) },
+          { label: "删除分组", danger: true, action: () => deleteChannelGroup(g) },
+        ] : [{ label: "新增分组", action: addChannelGroup }]) }, `${g || "未分组"} ${n}`)));
+    syncChannelNav(parseRoute());
+  } catch (e) {
+    $("#channelGroups").replaceChildren(el("span", { style: "display:block;padding:5px 8px;color:var(--side-muted);font-size:12px" }, "分组加载失败"));
+  }
+}
+
+async function addChannelGroup() {
+  const name = prompt("新分组名：");
+  if (name == null || !name.trim()) return;
+  try {
+    await api("/api/groups", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: name.trim() }) });
+    await loadCount(); toast(`已新增分组「${name.trim()}」`); go(`#/channels?group=${encodeURIComponent(name.trim())}`);
+  } catch (e) { toast("新增分组失败：" + e.message, true); }
+}
+
+async function renameChannelGroup(group) {
+  const name = prompt("新分组名：", group);
+  if (name == null || !name.trim() || name.trim() === group) return;
+  try {
+    await api("/api/groups", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ old: group, new: name.trim() }) });
+    await loadCount(); toast(`分组已重命名为「${name.trim()}」`); go(`#/channels?group=${encodeURIComponent(name.trim())}`);
+  } catch (e) { toast("重命名失败：" + e.message, true); }
+}
+
+async function deleteChannelGroup(group) {
+  if (!confirm(`删除分组「${group}」？组内频道会移到“未分组”，不会被删除。`)) return;
+  try {
+    await api("/api/groups", { method: "DELETE", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: group }) });
+    await loadCount(); toast("分组已删除"); go("#/channels?group=");
+  } catch (e) { toast("删除分组失败：" + e.message, true); }
 }
 async function toggleFav(btn, platform, room) {
   const key = platform + "/" + room.room_id;
@@ -465,7 +555,7 @@ function roomCard(platform, r) {
       r.online ? el("span", { class: "tag online" }, icon("flame"), fmtNum(r.online)) : null,
       r.live === false ? el("span", { class: "tag off" }, "未开播") : null),
     el("div", { class: "meta" },
-      el("div", { class: "txt" },
+      el("button", { class: "txt result-open", "aria-label": "观看 " + (r.user_name || r.room_id), onclick: () => openPlayer({ platform, room: r }) },
         el("div", { class: "title", title: r.title }, r.title || "（无标题）"),
         el("div", { class: "user" }, `${r.user_name} · ${r.room_id}`)),
       star,
@@ -478,13 +568,14 @@ function anchorCard(platform, r) {
   const star = el("button", { class: "btn icon sm star" }, icon("star", "width:16px;height:16px"));
   setStar(star, state.favs.has(platform + "/" + r.room_id));
   star.addEventListener("click", () => toggleFav(star, platform, r));
-  return el("article", { class: "anchor" },
-    el("div", { class: "ava" },
+  const info = el(r.live ? "button" : "div", r.live ? { class: "result-open", "aria-label": "观看 " + r.user_name, onclick: () => openPlayer({ platform, room: r }) } : { class: "result-open" },
+    el("span", { class: "ava" },
       el("img", { src: r.avatar || "", alt: "", loading: "lazy", referrerpolicy: "no-referrer" }),
       r.live ? el("span", { class: "dot", title: "直播中" }) : null),
-    el("div", { class: "txt" },
-      el("div", { class: "n", title: r.user_name }, r.user_name, r.live ? el("span", { class: "live-badge" }, "直播中") : null),
-      el("div", { class: "m" }, `房间 ${r.room_id}` + (r.online ? ` · 粉丝 ${fmtNum(r.online)}` : ""))),
+    el("span", { class: "txt" },
+      el("span", { class: "n", title: r.user_name }, r.user_name, r.live ? el("span", { class: "live-badge" }, "直播中") : null),
+      el("span", { class: "m" }, `房间 ${r.room_id}` + (r.online ? ` · 粉丝 ${fmtNum(r.online)}` : ""))));
+  return el("article", { class: "anchor" }, info,
     r.live ? el("button", { class: "btn icon sm", "aria-label": "观看 " + r.user_name, title: "观看", onclick: () => openPlayer({ platform, room: r }) }, icon("play", "width:16px;height:16px")) : null,
     star);
 }
@@ -608,24 +699,39 @@ function viewSearch(v, r) {
   input.focus();
 }
 
-async function viewChannels(v) {
-  setCrumbs(["频道管理", "频道列表"]);
-  v.append(head("频道列表", "收藏与导入的全部频道，按分组平铺，点卡片即可观看；表格视图用于批量管理。",
-    el("a", { class: "btn", href: "#/import" }, icon("plus", "width:16px;height:16px"), "导入与添加")));
+async function viewChannels(v, route) {
+  const selectedGroup = route.a || "";
+  setCrumbs(["频道管理", "频道列表", ...(route.hasGroup ? [selectedGroup || "未分组"] : [])]);
+  const renameBtn = selectedGroup ? el("button", { class: "btn" }, "重命名分组") : null;
+  const deleteGroupBtn = selectedGroup ? el("button", { class: "btn danger" }, "删除分组") : null;
+  const addGroupBtn = el("button", { class: "btn" }, icon("plus", "width:16px;height:16px"), "新增分组");
+  v.append(head(route.hasGroup ? (selectedGroup || "未分组") : "频道列表", "网络收藏与导入频道已合并，点卡片即可观看。",
+    addGroupBtn, renameBtn, deleteGroupBtn, el("a", { class: "btn", href: "#/import" }, icon("upload", "width:16px;height:16px"), "导入与添加")));
   const box = el("div", { class: "state" }, "加载中…");
   v.append(box);
-  let chs;
-  try { chs = await api("/api/channels"); state.channels = chs; $("#navCount").textContent = chs.length || ""; }
+  let chs, groups;
+  try {
+    [chs, groups] = await Promise.all([api("/api/channels"), api("/api/groups")]);
+    state.channels = chs; state.groups = groups; $("#navCount").textContent = chs.length || "";
+  }
   catch (e) { box.textContent = "加载失败：" + e.message; return; }
+  addGroupBtn.onclick = addChannelGroup;
+  if (renameBtn) renameBtn.onclick = () => renameChannelGroup(selectedGroup);
+  if (deleteGroupBtn) deleteGroupBtn.onclick = () => deleteChannelGroup(selectedGroup);
 
-  const groups = [...new Set(chs.map(c => c.group || "未分组"))];
   const favN = chs.filter(c => c.source === "favorite").length;
+  const displayGroups = chs.some(c => !c.group) ? ["", ...groups] : groups;
   const stats = el("div", { class: "stats" },
     ...[["频道总数", chs.length], ["收藏的直播间", favN], ["导入的频道", chs.length - favN], ["分组", groups.length]]
       .map(([k, n]) => el("div", { class: "panel stat" }, el("div", { class: "k" }, k), el("div", { class: "v" }, String(n)))));
 
   const q = el("input", { type: "search", placeholder: "按名称或地址筛选", "aria-label": "筛选频道", style: "width:220px" });
-  const gsel = el("select", { "aria-label": "按分组筛选" }, el("option", { value: "" }, "全部分组"), ...groups.map(g => el("option", { value: g }, g)));
+  const gsel = el("select", { "aria-label": "按分组筛选" }, el("option", { value: "-1" }, "全部分组"),
+    ...displayGroups.map((g, i) => el("option", { value: String(i) }, g || "未分组")));
+  const selectedGroupIndex = displayGroups.indexOf(selectedGroup);
+  const missingGroup = route.hasGroup && selectedGroupIndex < 0;
+  if (missingGroup) { if (renameBtn) renameBtn.disabled = true; if (deleteGroupBtn) deleteGroupBtn.disabled = true; }
+  gsel.value = route.hasGroup ? String(selectedGroupIndex) : "-1";
   // 状态来自"检测失效"的结果，只在本次打开页面期间保留。
   const hsel = el("select", { "aria-label": "按状态筛选" }, el("option", { value: "" }, "全部状态"),
     el("option", { value: "ok" }, "可播"), el("option", { value: "bad" }, "失效"), el("option", { value: "none" }, "未检测"));
@@ -643,6 +749,7 @@ async function viewChannels(v) {
   const selected = new Set();
   const PAGE = 50;
   let page = 0, rows = [];
+  let dragged = null;
   // 卡片（按分组平铺，点击播放）与表格（批量管理）两种视图，记住上次的选择。
   let mode = "grid";
   try { mode = localStorage.getItem("channelView") || "grid"; } catch (_) {}
@@ -699,13 +806,76 @@ async function viewChannels(v) {
 
   const filter = () => {
     const kw = q.value.trim().toLowerCase();
-    rows = chs.filter(c => (!gsel.value || (c.group || "未分组") === gsel.value) && (!ssel.value || c.source === ssel.value) && healthOK(c) &&
+    const group = +gsel.value < 0 ? null : displayGroups[+gsel.value];
+    rows = missingGroup ? [] : chs.filter(c => (group === null || (c.group || "") === group) && (!ssel.value || c.source === ssel.value) && healthOK(c) &&
       (!kw || c.name.toLowerCase().includes(kw) || addr(c).toLowerCase().includes(kw)));
     page = 0;
     mode === "grid" ? drawGrid() : draw();
   };
   const addr = c => c.platform ? `${c.platform}/${c.room_id}` + (c.query ? "?" + c.query : "") : c.url;
   const playURL = c => c.platform ? streamURL(c.platform, c.room_id) + (c.query ? "?" + c.query : "") : c.url;
+
+  async function reorder(c, target, after) {
+    if (!c || !target || c === target) return;
+    const old = chs.slice();
+    chs.splice(chs.indexOf(c), 1);
+    chs.splice(chs.indexOf(target) + (after ? 1 : 0), 0, c);
+    filter();
+    try {
+      await api("/api/channels/order", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ids: chs.map(x => x.id) }) });
+      toast("频道顺序已保存，订阅列表会使用新顺序");
+    } catch (e) {
+      chs.splice(0, chs.length, ...old); filter();
+      toast("保存顺序失败：" + e.message, true);
+    }
+  }
+
+  function draggable(node, c) {
+    node.draggable = true;
+    node.title = (node.title ? node.title + "\n" : "") + "拖动可调整频道顺序";
+    node.addEventListener("dragstart", e => { dragged = c; node.classList.add("dragging"); e.dataTransfer.effectAllowed = "move"; });
+    node.addEventListener("dragend", () => { dragged = null; node.classList.remove("dragging"); document.querySelectorAll(".drag-over").forEach(x => x.classList.remove("drag-over")); });
+    node.addEventListener("dragover", e => { if (dragged && dragged !== c) { e.preventDefault(); node.classList.add("drag-over"); node.dataset.dropAfter = String(e.clientY > node.getBoundingClientRect().top + node.offsetHeight / 2); } });
+    node.addEventListener("dragleave", () => node.classList.remove("drag-over"));
+    node.addEventListener("drop", e => { e.preventDefault(); node.classList.remove("drag-over"); reorder(dragged, c, node.dataset.dropAfter === "true"); });
+    return node;
+  }
+
+  async function moveToGroup(c, group) {
+    if (group === (c.group || "")) return;
+    await api(`/api/channels/${c.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ group }) });
+    c.group = group;
+    toast(c.group ? `已移到「${c.group}」` : "已移到未分组");
+    await loadCount(); filter();
+  }
+
+  function channelContext(e, c) {
+    openContextMenu(e, [
+      { label: "移动到：未分组", disabled: !c.group, action: () => moveToGroup(c, "").catch(err => toast("调整分组失败：" + err.message, true)) },
+      ...groups.map(g => ({ label: `移动到：${g}`, disabled: c.group === g, action: () => moveToGroup(c, g).catch(err => toast("调整分组失败：" + err.message, true)) })),
+      { label: "删除频道", danger: true, action: () => del([c]) },
+    ]);
+  }
+
+  function moveGroup(c) {
+    const select = el("select", { "aria-label": "目标分组", style: "width:100%;margin:12px 0" },
+      el("option", { value: "" }, "未分组"), ...groups.map(g => el("option", { value: g }, g)));
+    select.value = c.group || "";
+    const dlg = el("dialog", { class: "group-dialog" }, el("h2", { style: "font-size:16px;margin:0" }, `调整「${c.name}」的分组`), select);
+    const cancel = el("button", { class: "btn" }, "取消");
+    const save = el("button", { class: "btn primary" }, "保存");
+    dlg.append(el("div", { class: "toolbar", style: "justify-content:flex-end" }, cancel, save));
+    cancel.onclick = () => dlg.close();
+    save.onclick = async () => {
+      if (select.value === (c.group || "")) { dlg.close(); return; }
+      save.disabled = true;
+      try {
+        await moveToGroup(c, select.value); dlg.close();
+      } catch (e) { save.disabled = false; toast("调整分组失败：" + e.message, true); }
+    };
+    dlg.addEventListener("close", () => dlg.remove());
+    document.body.append(dlg); dlg.showModal(); select.focus();
+  }
 
   // 来源的简短说明：直播间显示平台+房间号，组播显示组播地址，其他显示主机名。
   const where = c => {
@@ -716,7 +886,7 @@ async function viewChannels(v) {
   };
   function drawGrid() {
     if (!rows.length) {
-      gridBox.replaceChildren(el("div", { class: "state" }, chs.length ? "没有符合条件的频道" : "还没有频道：去推荐、分区、搜索里收藏，或者导入 m3u"));
+      gridBox.replaceChildren(el("div", { class: "state" }, missingGroup ? "分组不存在或已删除" : chs.length ? "没有符合条件的频道" : "还没有频道：去推荐、分区、搜索里收藏，或者导入 m3u"));
       return;
     }
     const groups = new Map();
@@ -731,19 +901,20 @@ async function viewChannels(v) {
         ...[...groups].map(([g, list]) => el("a", { href: "#", onclick: e => { e.preventDefault(); document.getElementById(ids.get(g)).scrollIntoView({ behavior: "smooth" }); } }, `${g} ${list.length}`))) : null,
       ...[...groups].map(([g, list]) => el("section", { class: "ch-sec", id: ids.get(g) },
         el("h3", {}, g, el("span", { class: "badge" }, String(list.length))),
-        el("div", { class: "ch-grid" }, ...list.map(c =>
+        el("div", { class: "ch-grid" }, ...list.map(c => draggable(el("div", { class: "channel-item", oncontextmenu: e => channelContext(e, c) },
           el("button", { class: "ch-card" + (health(c) && !health(c).ok ? " bad" : ""), title: `${c.name}\n${addr(c)}` + (health(c) && !health(c).ok ? "\n失效：" + health(c).error : ""), onclick: () => openPlayer({ channel: c }) },
             el("span", { class: "logo", "aria-hidden": "true" }, (c.name || "?").trim().slice(0, 1),
               c.logo ? el("img", { src: c.logo, loading: "lazy", alt: "", referrerpolicy: "no-referrer" }) : null),
             el("span", { class: "txt" }, el("span", { class: "n", style: "display:block" }, c.name), el("span", { class: "m", style: "display:block" }, health(c) && !health(c).ok ? "失效 · " + health(c).error : where(c))),
-            el("span", { class: "pi" }, icon("play", "width:18px;height:18px"))))))));
+            el("span", { class: "pi" }, icon("play", "width:18px;height:18px"))),
+          el("button", { class: "btn icon sm move-group", "aria-label": "调整 " + c.name + " 的分组", title: "调整分组", onclick: () => moveGroup(c) }, icon("grid", "width:14px;height:14px"))), c))))));
   }
 
   function draw() {
     const slice = rows.slice(page * PAGE, page * PAGE + PAGE);
     tbody.replaceChildren(...slice.map(c => {
       const cb = el("input", { type: "checkbox", "aria-label": "选择 " + c.name, checked: selected.has(c.id) });
-      const tr = el("tr", { "aria-selected": String(selected.has(c.id)) },
+      const tr = el("tr", { "aria-selected": String(selected.has(c.id)), oncontextmenu: e => channelContext(e, c) },
         el("td", {}, cb),
         el("td", { class: "logo" }, c.logo ? el("img", { src: c.logo, loading: "lazy", alt: "", referrerpolicy: "no-referrer" }) : el("img", { alt: "" })),
         el("td", { class: "name", title: c.name + (health(c) && !health(c).ok ? "\n失效：" + health(c).error : "") }, c.name,
@@ -757,9 +928,11 @@ async function viewChannels(v) {
           " ",
           el("button", { class: "btn icon sm", "aria-label": "复制播放地址", title: "复制播放地址", onclick: () => copy(playURL(c)) }, icon("copy", "width:15px;height:15px")),
           " ",
+          el("button", { class: "btn icon sm", "aria-label": "调整 " + c.name + " 的分组", title: "调整分组", onclick: () => moveGroup(c) }, icon("grid", "width:15px;height:15px")),
+          " ",
           el("button", { class: "btn icon sm danger", "aria-label": "删除 " + c.name, title: "删除", onclick: () => del([c]) }, icon("trash", "width:15px;height:15px"))));
       cb.addEventListener("change", () => { cb.checked ? selected.add(c.id) : selected.delete(c.id); tr.setAttribute("aria-selected", String(cb.checked)); syncBulk(); });
-      return tr;
+      return draggable(tr, c);
     }));
     if (!slice.length) tbody.append(el("tr", {}, el("td", { colspan: "8", class: "state" }, chs.length ? "没有符合条件的频道" : "还没有频道：去推荐、分区、搜索里收藏，或者导入 m3u")));
     const pages = Math.max(1, Math.ceil(rows.length / PAGE));
@@ -798,7 +971,9 @@ async function viewChannels(v) {
     for (const c of rows.slice(page * PAGE, page * PAGE + PAGE)) all.checked ? selected.add(c.id) : selected.delete(c.id);
     draw();
   });
-  q.addEventListener("input", filter); gsel.addEventListener("change", filter); ssel.addEventListener("change", filter);
+  q.addEventListener("input", filter);
+  gsel.addEventListener("change", () => go(+gsel.value < 0 ? "#/channels" : `#/channels?group=${encodeURIComponent(displayGroups[+gsel.value])}`));
+  ssel.addEventListener("change", filter);
 
   tableBox.append(bulk,
     el("div", { class: "table-wrap" }, el("table", {},
@@ -811,31 +986,6 @@ async function viewChannels(v) {
     gridBox, tableBox));
   setMode(mode === "table" ? "table" : "grid");
   filter();
-}
-
-async function viewFavorites(v) {
-  setCrumbs(["频道管理", "我的网络收藏"]);
-  v.append(head("我的网络收藏", "在推荐、分区或搜索里收藏的直播间，点击即可观看。"));
-  const box = el("div", { class: "state" }, "加载中…");
-  v.append(box);
-  let favorites;
-  try {
-    const channels = await api("/api/channels");
-    state.channels = channels;
-    $("#navCount").textContent = channels.length || "";
-    favorites = channels.filter(c => c.source === "favorite" && c.platform);
-  } catch (e) { box.textContent = "加载失败：" + e.message; return; }
-  if (!favorites.length) {
-    box.textContent = "还没有网络收藏：去推荐、分区或搜索里点击星标收藏。";
-    return;
-  }
-  box.replaceWith(el("div", { class: "ch-grid" }, ...favorites.map(c =>
-    el("button", { class: "ch-card", title: `${c.name}\n${siteName(c.platform)} · ${c.room_id}`, onclick: () => openPlayer({ channel: c }) },
-      el("span", { class: "logo", "aria-hidden": "true" }, (c.name || "?").trim().slice(0, 1),
-        c.logo ? el("img", { src: c.logo, loading: "lazy", alt: "", referrerpolicy: "no-referrer" }) : null),
-      el("span", { class: "txt" }, el("span", { class: "n", style: "display:block" }, c.name),
-        el("span", { class: "m", style: "display:block" }, `${siteName(c.platform).replace(/直播$/, "")} · ${c.room_id}`)),
-      el("span", { class: "pi" }, icon("play", "width:18px;height:18px"))))));
 }
 
 function viewImport(v) {
@@ -1209,9 +1359,19 @@ function setCrumbs(items) {
   document.title = items.map(i => typeof i === "string" ? i : i.text).reverse().join(" · ") + " · 直播管理";
 }
 
+function syncChannelNav(route) {
+  const open = route.view === "channels";
+  $("#channelGroups").hidden = !open;
+  $("#channelNavLink").setAttribute("aria-expanded", String(open));
+  for (const a of $("#channelGroups").querySelectorAll("a")) {
+    const current = open && (route.hasGroup ? a.dataset.group === (route.a || "") : !a.hasAttribute("data-group"));
+    if (current) a.setAttribute("aria-current", "page"); else a.removeAttribute("aria-current");
+  }
+}
+
 function render() {
   const r = parseRoute();
-  const isBrowse = !["favorites", "channels", "import", "epg"].includes(r.view);
+  const isBrowse = !["channels", "import", "epg"].includes(r.view);
   const site = isBrowse ? r.site : (loadPref().site || state.sites[0].id);
   if (isBrowse) savePref(site);
   for (const b of $("#sites").children) b.setAttribute("aria-pressed", String(b.dataset.id === site));
@@ -1221,16 +1381,18 @@ function render() {
     a.toggleAttribute("aria-current", view === r.view);
     if (view === r.view) a.setAttribute("aria-current", "page");
   }
+  syncChannelNav(r);
   document.body.classList.remove("nav-open");
   const v = $("#view");
   v.replaceChildren();
-  ({ recommend: viewRecommend, category: viewCategory, search: viewSearch, favorites: viewFavorites, channels: viewChannels, import: viewImport, epg: viewEPG })[r.view](v, r);
+  ({ recommend: viewRecommend, category: viewCategory, search: viewSearch, channels: viewChannels, import: viewImport, epg: viewEPG })[r.view](v, r);
 }
 
 async function init() {
   $("#plUrl").textContent = playlistURL;
   $("#plCopy").addEventListener("click", () => copy(playlistURL));
   $("#menuBtn").addEventListener("click", () => document.body.classList.add("nav-open"));
+  $("#channelNavLink").addEventListener("contextmenu", e => openContextMenu(e, [{ label: "新增分组", action: addChannelGroup }]));
   $("#plClose").addEventListener("click", closePlayer);
   // Esc 关闭、点遮罩关闭时也要停流：不停的话中转和组播连接会在后台一直占着。
   $("#player").addEventListener("close", () => stopEngine());
@@ -1243,6 +1405,10 @@ async function init() {
   });
   $("#player").addEventListener("click", e => { if (e.target === e.currentTarget) closePlayer(); });
   $("#scrim").addEventListener("click", () => document.body.classList.remove("nav-open"));
+  document.addEventListener("click", e => { if (contextMenu && !contextMenu.contains(e.target)) closeContextMenu(); });
+  document.addEventListener("keydown", e => { if (e.key === "Escape") closeContextMenu(); });
+  window.addEventListener("resize", closeContextMenu);
+  window.addEventListener("scroll", closeContextMenu, true);
   try { state.sites = await api("/api/sites"); }
   catch (e) { $("#view").replaceChildren(el("div", { class: "state" }, "加载平台失败：" + e.message)); return; }
   for (const s of state.sites) {

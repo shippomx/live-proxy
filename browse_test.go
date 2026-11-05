@@ -72,7 +72,7 @@ func TestFavoriteFlow(t *testing.T) {
 
 	_, m3u := do(t, "GET", srv.URL+"/playlist.m3u", "", nil)
 	host := strings.TrimPrefix(srv.URL, "http://")
-	for _, want := range []string{"#EXTM3U", `group-title="虎牙直播",扫地僧`, "http://" + host + "/huya/11342394"} {
+	for _, want := range []string{"#EXTM3U", `group-title="网络直播",扫地僧`, "http://" + host + "/huya/11342394"} {
 		if !strings.Contains(m3u, want) {
 			t.Fatalf("m3u 缺少 %q:\n%s", want, m3u)
 		}
@@ -153,6 +153,70 @@ func TestImportFlow(t *testing.T) {
 	}
 }
 
+func TestChannelGroupManagement(t *testing.T) {
+	srv := newBrowseServer(t)
+	do(t, "POST", srv.URL+"/api/import", "text/plain", strings.NewReader(importFile))
+	_, body := do(t, "GET", srv.URL+"/api/channels", "", nil)
+	var list []store.Channel
+	json.Unmarshal([]byte(body), &list)
+	if len(list) == 0 {
+		t.Fatal("导入后没有频道")
+	}
+
+	code, body := do(t, "POST", srv.URL+"/api/groups", "application/json", strings.NewReader(`{"name":"新闻"}`))
+	if code != http.StatusCreated {
+		t.Fatalf("新增分组: %d %s", code, body)
+	}
+	code, body = do(t, "PATCH", srv.URL+"/api/channels/"+itoa(list[0].ID), "application/json", strings.NewReader(`{"group":"新闻"}`))
+	if code != http.StatusOK || !strings.Contains(body, `"updated":true`) {
+		t.Fatalf("移动频道: %d %s", code, body)
+	}
+	code, body = do(t, "PATCH", srv.URL+"/api/groups", "application/json", strings.NewReader(`{"old":"新闻","new":"新闻台"}`))
+	if code != http.StatusOK || !strings.Contains(body, `"updated":1`) {
+		t.Fatalf("重命名分组: %d %s", code, body)
+	}
+	_, body = do(t, "GET", srv.URL+"/api/channels", "", nil)
+	if !strings.Contains(body, `"group":"新闻台"`) {
+		t.Fatalf("分组未持久化: %s", body)
+	}
+	code, body = do(t, "PATCH", srv.URL+"/api/channels/"+itoa(list[0].ID), "application/json", strings.NewReader(`{"group":""}`))
+	if code != http.StatusOK {
+		t.Fatalf("移回未分组: %d %s", code, body)
+	}
+	code, _ = do(t, "PATCH", srv.URL+"/api/groups", "application/json", strings.NewReader(`{"old":"新闻台","new":""}`))
+	if code != http.StatusBadRequest {
+		t.Fatalf("空分组名应拒绝，实际 %d", code)
+	}
+	code, body = do(t, "DELETE", srv.URL+"/api/groups", "application/json", strings.NewReader(`{"name":"新闻台"}`))
+	if code != http.StatusOK || !strings.Contains(body, `"deleted":true`) {
+		t.Fatalf("删除分组: %d %s", code, body)
+	}
+}
+
+func TestChannelOrderControlsPlaylistOrder(t *testing.T) {
+	srv := newBrowseServer(t)
+	do(t, "POST", srv.URL+"/api/import", "text/plain", strings.NewReader(importFile))
+	_, body := do(t, "GET", srv.URL+"/api/channels", "", nil)
+	var list []store.Channel
+	json.Unmarshal([]byte(body), &list)
+	if len(list) < 2 {
+		t.Fatalf("测试频道不足: %s", body)
+	}
+	ids := make([]int64, len(list))
+	for i := range list {
+		ids[i] = list[len(list)-1-i].ID
+	}
+	payload, _ := json.Marshal(map[string]any{"ids": ids})
+	code, body := do(t, "PUT", srv.URL+"/api/channels/order", "application/json", bytes.NewReader(payload))
+	if code != http.StatusOK {
+		t.Fatalf("保存顺序: %d %s", code, body)
+	}
+	_, m3u := do(t, "GET", srv.URL+"/playlist.m3u", "", nil)
+	if strings.Index(m3u, ","+list[len(list)-1].Name+"\n") > strings.Index(m3u, ","+list[0].Name+"\n") {
+		t.Fatalf("播放列表未按调整后的顺序输出:\n%s", m3u)
+	}
+}
+
 func itoa(i int64) string { b, _ := json.Marshal(i); return string(b) }
 
 func TestBrowseRoutesDoNotShadowStream(t *testing.T) {
@@ -178,10 +242,13 @@ func TestBrowseRoutesDoNotShadowStream(t *testing.T) {
 		t.Fatalf("/browse: %d", code)
 	}
 	_, page := do(t, "GET", srv.URL+"/browse", "", nil)
-	for _, want := range []string{`href="#/favorites"`, `async function viewFavorites`, `openPlayer({ channel: c })`} {
+	for _, want := range []string{`id="channelGroups"`, `async function viewChannels`, `moveGroup(c)`, `openContextMenu(e`, `channelContext(e, c)`, `/api/channels/order`, `function draggable(node, c)`, `document.execCommand("copy")`, `class: "txt result-open"`, `const info = el(r.live ? "button" : "div"`} {
 		if !strings.Contains(page, want) {
-			t.Fatalf("浏览页缺少网络收藏播放入口 %q", want)
+			t.Fatalf("浏览页缺少分组频道功能 %q", want)
 		}
+	}
+	if strings.Contains(page, `href="#/favorites"`) {
+		t.Fatal("网络收藏应合并到频道列表")
 	}
 }
 

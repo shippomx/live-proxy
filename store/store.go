@@ -34,12 +34,19 @@ CREATE TABLE IF NOT EXISTS channels (
 	url        TEXT,
 	attrs      TEXT    NOT NULL DEFAULT '',
 	source     TEXT    NOT NULL,
+	sort_order INTEGER NOT NULL DEFAULT 0,
 	created_at INTEGER NOT NULL,
 	CHECK ((platform IS NOT NULL AND room_id IS NOT NULL AND url IS NULL)
 	    OR (platform IS NULL AND room_id IS NULL AND url IS NOT NULL))
 );
 CREATE UNIQUE INDEX IF NOT EXISTS ux_channels_room ON channels(platform, room_id) WHERE platform IS NOT NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS ux_channels_url  ON channels(url) WHERE url IS NOT NULL;
+CREATE TABLE IF NOT EXISTS channel_groups (
+	name       TEXT PRIMARY KEY,
+	created_at INTEGER NOT NULL
+);
+INSERT OR IGNORE INTO channel_groups (name, created_at)
+	SELECT DISTINCT group_name, created_at FROM channels WHERE group_name <> '';
 `
 
 // 频道来源，只用于在管理页上区分显示，不影响输出。
@@ -78,11 +85,43 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("初始化表结构: %w", err)
 	}
+	if err := migrateChannelOrder(db); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("初始化频道顺序: %w", err)
+	}
 	if err := initEPG(db); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("初始化节目单来源: %w", err)
 	}
 	return &Store{db: db}, nil
+}
+
+func migrateChannelOrder(db *sql.DB) error {
+	rows, err := db.Query(`PRAGMA table_info(channels)`)
+	if err != nil {
+		return err
+	}
+	found := false
+	for rows.Next() {
+		var cid, notnull, pk int
+		var name, typ string
+		var dflt any
+		if err := rows.Scan(&cid, &name, &typ, &notnull, &dflt, &pk); err != nil {
+			rows.Close()
+			return err
+		}
+		found = found || name == "sort_order"
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	if !found {
+		if _, err := db.Exec(`ALTER TABLE channels ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0`); err != nil {
+			return err
+		}
+	}
+	_, err = db.Exec(`UPDATE channels SET sort_order = id WHERE sort_order = 0`)
+	return err
 }
 
 func (s *Store) Close() error { return s.db.Close() }
@@ -102,9 +141,14 @@ func insertOrIgnore(ctx context.Context, q interface {
 	if (c.Platform == "") == (c.URL == "") {
 		return false, errors.New("频道必须且只能有平台房间或外部地址之一")
 	}
+	if c.Group != "" {
+		if _, err := q.ExecContext(ctx, `INSERT OR IGNORE INTO channel_groups (name, created_at) VALUES (?, ?)`, c.Group, time.Now().Unix()); err != nil {
+			return false, err
+		}
+	}
 	res, err := q.ExecContext(ctx, `INSERT OR IGNORE INTO channels
-		(name, group_name, logo, platform, room_id, query, url, attrs, source, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		(name, group_name, logo, platform, room_id, query, url, attrs, source, sort_order, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, (SELECT COALESCE(MAX(sort_order), 0) + 1 FROM channels), ?)`,
 		c.Name, c.Group, c.Logo, nullable(c.Platform), nullable(c.RoomID), c.Query,
 		nullable(c.URL), c.Attrs, source, time.Now().Unix())
 	if err != nil {
@@ -112,6 +156,40 @@ func insertOrIgnore(ctx context.Context, q interface {
 	}
 	n, err := res.RowsAffected()
 	return n == 1, err
+}
+
+var ErrOrderConflict = errors.New("频道列表已变化")
+
+// ReorderChannels 原子保存完整频道列表顺序，避免并发增删时覆盖新列表。
+func (s *Store) ReorderChannels(ctx context.Context, ids []int64) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var count int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM channels`).Scan(&count); err != nil {
+		return err
+	}
+	if len(ids) != count {
+		return ErrOrderConflict
+	}
+	seen := make(map[int64]struct{}, len(ids))
+	for i, id := range ids {
+		if _, ok := seen[id]; ok {
+			return ErrOrderConflict
+		}
+		seen[id] = struct{}{}
+		res, err := tx.ExecContext(ctx, `UPDATE channels SET sort_order = ? WHERE id = ?`, i+1, id)
+		if err != nil {
+			return err
+		}
+		n, err := res.RowsAffected()
+		if err != nil || n != 1 {
+			return ErrOrderConflict
+		}
+	}
+	return tx.Commit()
 }
 
 // AddFavorite 收藏一个直播间。已经在库里（无论是收藏还是导入进来的）时返回 false，不改动原记录。
@@ -144,6 +222,113 @@ func (s *Store) Delete(ctx context.Context, id int64) (bool, error) {
 	return n > 0, err
 }
 
+// SetChannelGroup 把一个频道移到指定分组。
+func (s *Store) SetChannelGroup(ctx context.Context, id int64, group string) (bool, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback()
+	if group != "" {
+		var n int
+		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM channel_groups WHERE name = ?`, group).Scan(&n); err != nil {
+			return false, err
+		}
+		if n == 0 {
+			return false, ErrGroupNotFound
+		}
+	}
+	res, err := tx.ExecContext(ctx, `UPDATE channels SET group_name = ? WHERE id = ?`, group, id)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	if err != nil || n == 0 {
+		return false, err
+	}
+	return true, tx.Commit()
+}
+
+var (
+	ErrGroupNotFound = errors.New("分组不存在")
+	ErrGroupExists   = errors.New("分组已存在")
+)
+
+func (s *Store) Groups(ctx context.Context) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT name FROM channel_groups ORDER BY created_at, name`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []string{}
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, err
+		}
+		out = append(out, name)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) AddGroup(ctx context.Context, name string) (bool, error) {
+	res, err := s.db.ExecContext(ctx, `INSERT OR IGNORE INTO channel_groups (name, created_at) VALUES (?, ?)`, name, time.Now().Unix())
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	return n > 0, err
+}
+
+// RenameGroup 原子更新分组和组内频道。
+func (s *Store) RenameGroup(ctx context.Context, old, new string) (int64, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+	var exists int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM channel_groups WHERE name = ?`, new).Scan(&exists); err != nil {
+		return 0, err
+	}
+	if exists > 0 {
+		return 0, ErrGroupExists
+	}
+	res, err := tx.ExecContext(ctx, `UPDATE channel_groups SET name = ? WHERE name = ?`, new, old)
+	if err != nil {
+		return 0, err
+	}
+	n, err := res.RowsAffected()
+	if err != nil || n == 0 {
+		return n, err
+	}
+	if _, err = tx.ExecContext(ctx, `UPDATE channels SET group_name = ? WHERE group_name = ?`, new, old); err != nil {
+		return 0, err
+	}
+	return n, tx.Commit()
+}
+
+// DeleteGroup 删除分组，组内频道保留并移入未分组。
+func (s *Store) DeleteGroup(ctx context.Context, name string) (int64, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+	if _, err = tx.ExecContext(ctx, `UPDATE channels SET group_name = '' WHERE group_name = ?`, name); err != nil {
+		return 0, err
+	}
+	res, err := tx.ExecContext(ctx, `DELETE FROM channel_groups WHERE name = ?`, name)
+	if err != nil {
+		return 0, err
+	}
+	n, err := res.RowsAffected()
+	if err != nil || n == 0 {
+		return n, err
+	}
+	return n, tx.Commit()
+}
+
 type ImportResult struct {
 	Added   int `json:"added"`
 	Existed int `json:"existed"` // 库里已有（或同一文件内重复），未改动
@@ -173,11 +358,11 @@ func (s *Store) Import(ctx context.Context, chs []playlist.Channel) (ImportResul
 	return r, tx.Commit()
 }
 
-// List 按加入顺序返回全部频道：播放器里的顺序与导入文件、收藏先后一致。
+// List 按用户调整后的顺序返回全部频道，播放列表也直接使用这个顺序。
 func (s *Store) List(ctx context.Context) ([]Channel, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT id, name, group_name, logo,
 		COALESCE(platform, ''), COALESCE(room_id, ''), query, COALESCE(url, ''), attrs, source, created_at
-		FROM channels ORDER BY id`)
+		FROM channels ORDER BY sort_order, id`)
 	if err != nil {
 		return nil, err
 	}

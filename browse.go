@@ -102,6 +102,12 @@ func registerBrowseRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("DELETE /api/favorites/{p}/{rid}", handleRemoveFavorite)
 
 	mux.HandleFunc("GET /api/channels", handleChannels)
+	mux.HandleFunc("PUT /api/channels/order", handleReorderChannels)
+	mux.HandleFunc("PATCH /api/channels/{id}", handleMoveChannel)
+	mux.HandleFunc("GET /api/groups", handleGroups)
+	mux.HandleFunc("POST /api/groups", handleAddGroup)
+	mux.HandleFunc("PATCH /api/groups", handleRenameGroup)
+	mux.HandleFunc("DELETE /api/groups", handleDeleteGroup)
 	mux.HandleFunc("DELETE /api/channels/{id}", handleDeleteChannel)
 	mux.HandleFunc("POST /api/import", handleImport)
 
@@ -242,7 +248,7 @@ func handleAddFavorite(w http.ResponseWriter, r *http.Request, b sites.Browser) 
 		roomID, body.Name, body.Logo = info.RoomID, info.UserName, info.Avatar
 	}
 	added, err := db.AddFavorite(r.Context(), playlist.Channel{
-		Name: body.Name, Group: b.Name(), Logo: body.Logo, Platform: b.ID(), RoomID: roomID,
+		Name: body.Name, Group: "网络直播", Logo: body.Logo, Platform: b.ID(), RoomID: roomID,
 	})
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
@@ -272,6 +278,159 @@ func handleChannels(w http.ResponseWriter, r *http.Request) {
 		list = []store.Channel{}
 	}
 	writeJSON(w, http.StatusOK, list)
+}
+
+func handleReorderChannels(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+	var body struct {
+		IDs []int64 `json:"ids"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.IDs == nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "频道顺序不是合法 JSON"})
+		return
+	}
+	if err := db.ReorderChannels(r.Context(), body.IDs); errors.Is(err, store.ErrOrderConflict) {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "频道列表已变化，请刷新后重试"})
+		return
+	} else if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	triggerEPG()
+	writeJSON(w, http.StatusOK, map[string]bool{"updated": true})
+}
+
+func readGroup(w http.ResponseWriter, r *http.Request, dst any) bool {
+	r.Body = http.MaxBytesReader(w, r.Body, 4<<10)
+	if err := json.NewDecoder(r.Body).Decode(dst); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "请求体不是合法 JSON"})
+		return false
+	}
+	return true
+}
+
+func validGroup(s string) bool { return len([]rune(s)) <= 100 }
+
+func handleGroups(w http.ResponseWriter, r *http.Request) {
+	groups, err := db.Groups(r.Context())
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, groups)
+}
+
+func handleAddGroup(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Name string `json:"name"`
+	}
+	if !readGroup(w, r, &body) {
+		return
+	}
+	body.Name = strings.TrimSpace(body.Name)
+	if body.Name == "" || !validGroup(body.Name) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "分组名必须为 1–100 个字符"})
+		return
+	}
+	added, err := db.AddGroup(r.Context(), body.Name)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	if !added {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "分组已存在"})
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]bool{"added": true})
+}
+
+func handleMoveChannel(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "无效的频道 id"})
+		return
+	}
+	var body struct {
+		Group string `json:"group"`
+	}
+	if !readGroup(w, r, &body) {
+		return
+	}
+	body.Group = strings.TrimSpace(body.Group)
+	if !validGroup(body.Group) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "分组名不能超过 100 个字符"})
+		return
+	}
+	ok, err := db.SetChannelGroup(r.Context(), id, body.Group)
+	if errors.Is(err, store.ErrGroupNotFound) {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "目标分组已不存在，请刷新后重试"})
+		return
+	}
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "频道不存在"})
+		return
+	}
+	triggerEPG()
+	writeJSON(w, http.StatusOK, map[string]bool{"updated": true})
+}
+
+func handleRenameGroup(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Old string `json:"old"`
+		New string `json:"new"`
+	}
+	if !readGroup(w, r, &body) {
+		return
+	}
+	body.Old, body.New = strings.TrimSpace(body.Old), strings.TrimSpace(body.New)
+	if body.Old == "" || body.New == "" || !validGroup(body.Old) || !validGroup(body.New) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "新旧分组名必须为 1–100 个字符"})
+		return
+	}
+	n, err := db.RenameGroup(r.Context(), body.Old, body.New)
+	if errors.Is(err, store.ErrGroupExists) {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
+		return
+	}
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	if n == 0 {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "分组不存在"})
+		return
+	}
+	triggerEPG()
+	writeJSON(w, http.StatusOK, map[string]int64{"updated": n})
+}
+
+func handleDeleteGroup(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Name string `json:"name"`
+	}
+	if !readGroup(w, r, &body) {
+		return
+	}
+	body.Name = strings.TrimSpace(body.Name)
+	if body.Name == "" || !validGroup(body.Name) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "无效的分组名"})
+		return
+	}
+	n, err := db.DeleteGroup(r.Context(), body.Name)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	if n == 0 {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "分组不存在"})
+		return
+	}
+	triggerEPG()
+	writeJSON(w, http.StatusOK, map[string]bool{"deleted": true})
 }
 
 func handleDeleteChannel(w http.ResponseWriter, r *http.Request) {

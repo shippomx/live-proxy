@@ -2,6 +2,8 @@ package store
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"path/filepath"
 	"slices"
 	"testing"
@@ -134,6 +136,83 @@ func TestImportRejectsInvalidAtomically(t *testing.T) {
 	}
 	if list, _ := s.List(ctx); len(list) != 0 {
 		t.Fatalf("出错时整个导入应回滚，库里却有: %+v", list)
+	}
+}
+
+func TestMoveChannelAndRenameGroup(t *testing.T) {
+	ctx := context.Background()
+	s, _ := openTemp(t)
+	s.Import(ctx, []playlist.Channel{
+		{Name: "A", Group: "旧分组", URL: "http://a"},
+		{Name: "B", Group: "旧分组", URL: "http://b"},
+	})
+	list, _ := s.List(ctx)
+	if ok, err := s.AddGroup(ctx, "单独"); err != nil || !ok {
+		t.Fatalf("新增分组: ok=%v err=%v", ok, err)
+	}
+	if ok, err := s.SetChannelGroup(ctx, list[0].ID, "单独"); err != nil || !ok {
+		t.Fatalf("移动频道: ok=%v err=%v", ok, err)
+	}
+	if n, err := s.RenameGroup(ctx, "旧分组", "新分组"); err != nil || n != 1 {
+		t.Fatalf("重命名分组: n=%d err=%v", n, err)
+	}
+	list, _ = s.List(ctx)
+	if list[0].Group != "单独" || list[1].Group != "新分组" {
+		t.Fatalf("分组更新错误: %+v", list)
+	}
+	if n, err := s.DeleteGroup(ctx, "单独"); err != nil || n != 1 {
+		t.Fatalf("删除分组: n=%d err=%v", n, err)
+	}
+	list, _ = s.List(ctx)
+	if list[0].Group != "" {
+		t.Fatalf("删除分组后频道应移到未分组: %+v", list[0])
+	}
+}
+
+func TestReorderChannelsPersistsAndRejectsStaleList(t *testing.T) {
+	ctx := context.Background()
+	s, _ := openTemp(t)
+	s.Import(ctx, []playlist.Channel{{Name: "A", URL: "http://a"}, {Name: "B", URL: "http://b"}, {Name: "C", URL: "http://c"}})
+	list, _ := s.List(ctx)
+	if err := s.ReorderChannels(ctx, []int64{list[2].ID, list[0].ID, list[1].ID}); err != nil {
+		t.Fatal(err)
+	}
+	list, _ = s.List(ctx)
+	if got := []string{list[0].Name, list[1].Name, list[2].Name}; !slices.Equal(got, []string{"C", "A", "B"}) {
+		t.Fatalf("排序未持久化: %v", got)
+	}
+	if err := s.ReorderChannels(ctx, []int64{list[0].ID, list[1].ID}); !errors.Is(err, ErrOrderConflict) {
+		t.Fatalf("过期列表应冲突，实际 %v", err)
+	}
+}
+
+func TestOpenMigratesExistingChannelGroups(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "old.db")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = db.Exec(`CREATE TABLE channels (
+		id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, group_name TEXT NOT NULL DEFAULT '', logo TEXT NOT NULL DEFAULT '',
+		platform TEXT, room_id TEXT, query TEXT NOT NULL DEFAULT '', url TEXT, attrs TEXT NOT NULL DEFAULT '', source TEXT NOT NULL, created_at INTEGER NOT NULL);
+		INSERT INTO channels (name, group_name, url, source, created_at) VALUES ('A', '旧数据分组', 'http://a', 'import', 1);`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+
+	s, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	groups, err := s.Groups(context.Background())
+	if err != nil || !slices.Equal(groups, []string{"旧数据分组"}) {
+		t.Fatalf("旧数据分组迁移失败: groups=%v err=%v", groups, err)
+	}
+	list, err := s.List(context.Background())
+	if err != nil || len(list) != 1 || list[0].Name != "A" {
+		t.Fatalf("旧频道顺序迁移失败: list=%v err=%v", list, err)
 	}
 }
 
